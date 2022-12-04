@@ -40,9 +40,9 @@ impl CacheBuilder for UnboundedLRUCache{
 
     fn put(&self, key: CacheKey, value: CacheValue) -> Option<(CacheKey, CacheValue)> {
         let mut unlocked_cache = self.cache.lock().unwrap();
-        if self.len >= unlocked_cache.len() {
+        
+        if self.len > unlocked_cache.len() {
             unlocked_cache.put(key, value);
-            println!("Key is: {:?}", key.key);
             Some((key, value))
         } else {
             let dropped_buffer = unlocked_cache.pop_lru();
