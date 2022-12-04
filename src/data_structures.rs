@@ -25,6 +25,6 @@ pub(crate) const DEFAULT_CACHE_SIZE: usize = 10_000;
 pub(crate) trait CacheBuilder{
     fn put(&self, key: CacheKey, value: CacheValue) -> Option<(CacheKey, CacheValue)>;
     fn get_cache_size(&self) -> usize;
-    fn get(&self, key: CacheKey) -> Option<(CacheKey, CacheValue)>;
+    fn get(&self, key: CacheKey) -> Option<CacheValue>;
     fn get_hit_rate(&self) -> f64;
 }

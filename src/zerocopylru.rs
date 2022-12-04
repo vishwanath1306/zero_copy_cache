@@ -51,8 +51,10 @@ impl CacheBuilder for UnboundedLRUCache{
         }
     }
 
-    fn get(&self, key: CacheKey) -> Option<(CacheKey, CacheValue)> {
-        todo!()
+    fn get(&self, key: CacheKey) -> Option<CacheValue> {
+        let mut unlocked_cache = self.cache.lock().unwrap();
+        let return_value = unlocked_cache.get(&key);
+        return_value.copied()
     }
 
     fn get_cache_size(&self) -> usize {
