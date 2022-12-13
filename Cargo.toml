@@ -8,4 +8,4 @@ edition = "2021"
 [dependencies]
 lru="0.8.1"
 rand="0.8.5"
-# wtinylfu="*"
+wtinylfu="0.1.0"
