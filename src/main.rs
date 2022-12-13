@@ -46,6 +46,58 @@ mod test {
         });
     }
 
+    #[test]
+    pub fn resize_cache_bigger(){
+        let mut curr_cache = UnboundedLRUCache::new(10);
+        let input_values = generate_key_value(10);
+
+        for val in input_values{
+            curr_cache.put(val.0, val.1);
+        }
+
+        assert_eq!(10, curr_cache.get_cache_size());
+        curr_cache.resize_cache(15);
+
+        let input_values_2 = generate_key_value(5);
+
+        for val in input_values_2.clone(){
+            curr_cache.put(val.0, val.1);
+        }
+
+        assert_eq!(15, curr_cache.get_cache_size());
+        assert_eq!(input_values_2[3].1, match curr_cache.get(input_values_2[3].0) {
+            Some(x) => {
+                x
+            },
+            _ => panic!()
+        });
+
+    }
+
+    #[test]
+    pub fn resize_cache_smaller(){
+
+        let mut curr_cache = UnboundedLRUCache::new(10);
+        let input_values = generate_key_value(10);
+
+        for val in input_values{
+            curr_cache.put(val.0, val.1);
+        }
+
+        assert_eq!(10, curr_cache.get_cache_size());
+        curr_cache.resize_cache(15);
+
+        let input_values_2 = generate_key_value(5);
+
+        for val in input_values_2{
+            curr_cache.put(val.0, val.1);
+        }
+
+        assert_eq!(15, curr_cache.get_cache_size());
+
+
+    }
+
     pub fn generate_key_value(no_of_pairs: usize) -> Vec<(CacheKey, CacheValue)>{
 
         let mut value_vec: Vec<(CacheKey, CacheValue)> = Vec::new();
@@ -60,5 +112,6 @@ mod test {
         }
         value_vec
     }
+    
     
 }

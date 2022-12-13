@@ -65,6 +65,16 @@ impl CacheBuilder for UnboundedLRUCache{
         todo!()
     }
 
+    fn resize_cache(&mut self, new_size: usize) {
+        if new_size >= self.len{
+            self.len = new_size;
+        }else{
+            let mut unlocked_cache = self.cache.lock().unwrap();
+            let difference = self.len - new_size;
+            println!("The difference is: {}", difference);
+        }
+    }
+
 }
 
 

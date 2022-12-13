@@ -27,4 +27,5 @@ pub(crate) trait CacheBuilder{
     fn get_cache_size(&self) -> usize;
     fn get(&self, key: CacheKey) -> Option<CacheValue>;
     fn get_hit_rate(&self) -> f64;
+    fn resize_cache(&mut self, new_size: usize);
 }
