@@ -71,7 +71,10 @@ impl CacheBuilder for UnboundedLRUCache{
         }else{
             let mut unlocked_cache = self.cache.lock().unwrap();
             let difference = self.len - new_size;
-            println!("The difference is: {}", difference);
+            for _ in 0..difference{
+                unlocked_cache.pop_lru();
+            }
+            self.len = new_size;
         }
     }
 

@@ -77,25 +77,30 @@ mod test {
     #[test]
     pub fn resize_cache_smaller(){
 
-        let mut curr_cache = UnboundedLRUCache::new(10);
-        let input_values = generate_key_value(10);
+        let mut curr_cache = UnboundedLRUCache::new(15);
 
-        for val in input_values{
+        let input_values = generate_key_value(10);
+        let input_values_2 = generate_key_value(5);
+        
+        for val in input_values_2.clone(){
             curr_cache.put(val.0, val.1);
         }
 
-        assert_eq!(10, curr_cache.get_cache_size());
-        curr_cache.resize_cache(15);
-
-        let input_values_2 = generate_key_value(5);
-
-        for val in input_values_2{
+        for val in input_values.clone(){
             curr_cache.put(val.0, val.1);
         }
 
         assert_eq!(15, curr_cache.get_cache_size());
-
-
+        curr_cache.resize_cache(10);
+        assert_eq!(10, curr_cache.get_cache_size());
+        assert_eq!(None, curr_cache.get(input_values_2[0].0));
+        assert_eq!(input_values[0].1, match curr_cache.get(input_values[0].0) {
+            Some(x) => {
+                x
+            },
+            _ => panic!()
+        });
+        
     }
 
     pub fn generate_key_value(no_of_pairs: usize) -> Vec<(CacheKey, CacheValue)>{
