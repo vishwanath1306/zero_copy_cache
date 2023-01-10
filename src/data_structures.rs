@@ -9,6 +9,19 @@ impl CacheKey {
     }
 }
 
+pub struct Stats{
+    pub access_count: i64,
+}
+
+pub struct Segment{
+    pub segment_id: i64,
+    pub segment_stats: Stats
+}
+
+pub struct HotSet{
+    pub current_hotset: Vec<Segment>
+}
+
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 pub struct CacheValue {
     pub value: i64,
