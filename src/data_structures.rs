@@ -15,10 +15,12 @@ pub struct Stats{
 
 pub struct Segment{
     pub segment_id: i64,
-    pub segment_stats: Stats
+    pub segment_stats: Stats,
+    pub page_size: i64,
 }
 
 pub struct HotSet{
+    // TODO Experiment this with a hyperloglog to reduce space usage;
     pub current_hotset: Vec<Segment>
 }
 
