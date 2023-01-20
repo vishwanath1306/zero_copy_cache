@@ -1,10 +1,6 @@
 pub mod data_structures;
 pub mod zerocopylru;
 
-fn main() {
-    println!("Hello, world!");
-}
-
 #[cfg(test)]
 mod test {
     use core::panic;
