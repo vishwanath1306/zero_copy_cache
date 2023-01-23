@@ -1,4 +1,6 @@
-pub(crate) const DEFAULT_CACHE_SIZE: usize = 10_000;
+use std::collections::HashMap;
+
+pub const DEFAULT_CACHE_SIZE: usize = 10_000;
 // TODO: Convert all the page sizes, and stuff to an enum with constants. 
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
@@ -11,6 +13,8 @@ impl CacheKey {
         CacheKey { key: entry }
     }
 }
+
+pub type SegmentStatMap = HashMap<Segment, Stats>;
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 pub struct Stats{
@@ -26,7 +30,6 @@ impl Stats{
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 pub struct Segment{
     pub segment_id: i64,
-    pub segment_stats: Stats,
     pub page_size: i64,
 }
 
@@ -36,7 +39,6 @@ impl Segment {
     pub fn new(seg_id: i64, page_size: i64) -> Self {
 
         Segment { segment_id: seg_id, 
-                segment_stats: Stats::new(), 
                 page_size: page_size 
         }
     }
