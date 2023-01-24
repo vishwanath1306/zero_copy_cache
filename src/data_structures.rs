@@ -1,4 +1,5 @@
 use std::{collections::HashMap, hash::Hash};
+use std::time::SystemTime;
 
 pub const DEFAULT_CACHE_SIZE: usize = 10_000;
 // TODO: Convert all the page sizes, and stuff to an enum with constants. 
@@ -9,14 +10,24 @@ pub type SegmentId = i64;
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 pub struct Stats{
     pub access_count: i64,
+    pub last_access_time: SystemTime,
 }
 
 impl Stats{
     pub fn new() -> Self{
-        Stats { access_count: 1 }
+        Stats { access_count: 1, last_access_time: SystemTime::now() }
     }
 
-    pub fn increment(&mut self){
+    pub fn update_stats(&mut self){
+        self.last_access_time = SystemTime::now();
+        self.access_count += 1;
+    }
+
+    pub fn update_access_time(&mut self){
+        self.last_access_time = SystemTime::now();
+    }
+
+    pub fn increment_access_count(&mut self){
         self.access_count +=1;
     }
 }
@@ -52,10 +63,10 @@ S: Hash + PartialEq + Eq + Clone + Segment + Default,
         }
     }
 
-    pub fn increment_count(&mut self, segment: &S){
+    pub fn update_stats(&mut self, segment: &S){
 
         if self.segment_stats.contains_key(segment) {
-            self.segment_stats.get_mut(segment).unwrap().increment();
+            self.segment_stats.get_mut(segment).unwrap().update_stats();
         } else {
             // Stats constructor should automatically increment to 1
             self.segment_stats.insert(segment.clone(), Stats::new());
@@ -63,12 +74,3 @@ S: Hash + PartialEq + Eq + Clone + Segment + Default,
 
     }
 }
-
-// pub trait CacheBuilder<S: Hash + PartialEq + Clone + Eq + Segment>{
-
-//     fn insert(&mut self, segment: &S);
-//     fn get_curr_pinned_list(&self) -> Vec<SegmentId>;
-//     fn get_cache_size(&self) -> usize;
-//     fn resize_cache(&mut self, new_size: usize);
-
-// }
