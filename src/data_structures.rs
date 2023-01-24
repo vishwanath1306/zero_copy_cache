@@ -43,7 +43,7 @@ S: Hash + PartialEq + Eq + Clone + Segment + Default,
 // C: CacheBuilder<S>
 {
 
-    pub fn new(&self) -> Self{
+    pub fn new() -> Self{
         ZeroCopyCache { 
             segment_stats: SegmentStatMap::default(), 
             current_pinned_list: Vec::new(), 
@@ -59,7 +59,7 @@ S: Hash + PartialEq + Eq + Clone + Segment + Default,
             // Stats constructor should automatically increment to 1
             self.segment_stats.insert(segment.clone(), Stats::new());
         }
-        
+
     }
 }
 
