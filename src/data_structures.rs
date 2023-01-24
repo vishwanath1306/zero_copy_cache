@@ -30,6 +30,10 @@ impl Stats{
     pub fn increment_access_count(&mut self){
         self.access_count +=1;
     }
+
+    pub fn get_access_count(&self) -> i64{
+        self.access_count
+    }
 }
 
 pub trait Segment {
@@ -73,4 +77,9 @@ S: Hash + PartialEq + Eq + Clone + Segment + Default,
         }
 
     }
+
+    pub fn get_segment_access_count(&self, segment: S) -> i64{
+        self.segment_stats.get(&segment).unwrap().get_access_count()
+    }
+    
 }
