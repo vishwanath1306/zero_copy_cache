@@ -28,6 +28,7 @@ pub trait Segment {
 
 }
  
+#[derive(Debug, Eq, PartialEq)]
 pub struct ZeroCopyCache<S> where
 S: Hash + PartialEq + Eq + Clone + Segment + Default,
 // C: CacheBuilder<S>
