@@ -1,118 +1,69 @@
 pub mod data_structures;
 pub mod zerocopylru;
 
-// #[cfg(test)]
-// mod test {
-//     use core::panic;
 
-//     use crate::data_structures::{CacheKey, CacheValue, CacheBuilder};
-//     use crate::zerocopylru::UnboundedLRUCache;
-//     use rand::Rng;
+#[cfg(test)]
+mod test{
 
-//     #[test]
-//     pub fn test_lru_cache_put() {
+    use crate::data_structures::SegmentId;
+    use crate::data_structures::Segment;
+    use crate::data_structures::ZeroCopyCache;
+    use rand::Rng;
 
-//         let curr_cache = UnboundedLRUCache::new(5);
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct ExampleSegment {
+        segment_id: SegmentId,
+        page_size: usize,
+    }
 
-//         let input_values = generate_key_value(7);
-//         for val in input_values{
-//             curr_cache.put(val.0, val.1);
-//         }
+    impl ExampleSegment{
+        pub fn new(segment_id: SegmentId, page_size: usize) -> Self{
+            ExampleSegment { 
+                segment_id: segment_id, 
+                page_size: page_size
+            }
+        }
+    }
 
-//         assert_eq!(curr_cache.get_cache_size(), 5);
-//         assert_ne!(curr_cache.get_cache_size(), 7);
-//     }
-
-//     #[test]
-//     pub fn test_lru_retrieval(){
-
-//         let curr_cache = UnboundedLRUCache::new(5);
+    impl Segment for ExampleSegment {
         
-//         let input_values = generate_key_value(7);
-//         for val in input_values.clone(){
-//             curr_cache.put(val.0, val.1);
-//         }
+        fn get_page_size(&self) -> u64 {
+            self.page_size as _
+        }
 
-//         assert_eq!(None, curr_cache.get(input_values[0].0));
-//         assert_eq!(input_values[3].1, match curr_cache.get(input_values[3].0) {
-//             Some(x) => {
-//                 x
-//             },
-//             _ => panic!()
-//         });
-//     }
+        fn get_segment_id(&self) -> i64 {
+            self.segment_id as _
+        }
+    }
 
-//     #[test]
-//     pub fn resize_cache_bigger(){
-//         let mut curr_cache = UnboundedLRUCache::new(10);
-//         let input_values = generate_key_value(10);
+    #[test]
+    pub fn test_zcc_segment_insert(){
+        let mut zero_copy_cache = ZeroCopyCache::new();
+        let new_segments = create_segments(5);
+        let access_list = create_random_array(5, 50);
+        for val in &access_list{
+            zero_copy_cache.update_stats(&new_segments[*val]);
+        }
 
-//         for val in input_values{
-//             curr_cache.put(val.0, val.1);
-//         }
+        let value_count = access_list.clone().iter().filter(|&n| *n == 3).count() as i64;
+        assert_eq!(value_count, zero_copy_cache.get_segment_access_count(new_segments[3]));
+    }
 
-//         assert_eq!(10, curr_cache.get_cache_size());
-//         curr_cache.resize_cache(15);
+    pub fn create_random_array(no_of_segments: usize, no_of_elements: usize) -> Vec<usize>{
+        let mut rand_vec: Vec<usize> = Vec::new();
+        let mut rand_rng = rand::thread_rng();
+        for _ in 0..no_of_elements{
+            rand_vec.push(rand_rng.gen_range(0..no_of_segments));
+        }
+        rand_vec
+    }
 
-//         let input_values_2 = generate_key_value(5);
+    pub fn create_segments(no_of_segments: usize) -> Vec<ExampleSegment>{
 
-//         for val in input_values_2.clone(){
-//             curr_cache.put(val.0, val.1);
-//         }
-
-//         assert_eq!(15, curr_cache.get_cache_size());
-//         assert_eq!(input_values_2[3].1, match curr_cache.get(input_values_2[3].0) {
-//             Some(x) => {
-//                 x
-//             },
-//             _ => panic!()
-//         });
-
-//     }
-
-//     #[test]
-//     pub fn resize_cache_smaller(){
-
-//         let mut curr_cache = UnboundedLRUCache::new(15);
-
-//         let input_values = generate_key_value(10);
-//         let input_values_2 = generate_key_value(5);
-        
-//         for val in input_values_2.clone(){
-//             curr_cache.put(val.0, val.1);
-//         }
-
-//         for val in input_values.clone(){
-//             curr_cache.put(val.0, val.1);
-//         }
-
-//         assert_eq!(15, curr_cache.get_cache_size());
-//         curr_cache.resize_cache(10);
-//         assert_eq!(10, curr_cache.get_cache_size());
-//         assert_eq!(None, curr_cache.get(input_values_2[0].0));
-//         assert_eq!(input_values[0].1, match curr_cache.get(input_values[0].0) {
-//             Some(x) => {
-//                 x
-//             },
-//             _ => panic!()
-//         });
-        
-//     }
-
-//     pub fn generate_key_value(no_of_pairs: usize) -> Vec<(CacheKey, CacheValue)>{
-
-//         let mut value_vec: Vec<(CacheKey, CacheValue)> = Vec::new();
-//         let mut rng = rand::thread_rng();
-//         for _ in 0..no_of_pairs{
-//             value_vec.push(
-//                 (
-//                     CacheKey::new(rng.gen()),
-//                     CacheValue::new(rng.gen())
-//                 )
-//             )
-//         }
-//         value_vec
-//     }
-    
-    
-// }
+        let mut segment_vector = Vec::new();
+        for i in 0..no_of_segments{
+            segment_vector.push(ExampleSegment::new((i+1).try_into().unwrap(), 4096));
+        }
+        segment_vector
+    }
+}

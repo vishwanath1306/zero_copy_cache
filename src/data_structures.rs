@@ -81,5 +81,20 @@ S: Hash + PartialEq + Eq + Clone + Segment + Default,
     pub fn get_segment_access_count(&self, segment: S) -> i64{
         self.segment_stats.get(&segment).unwrap().get_access_count()
     }
+
+    pub fn calculate_hotset(&mut self){
+
+        let mut sorting_vec: Vec<(SegmentId, i64)> = Vec::new();
+        let mut pinned_list = Vec::new();
+        for (k, v) in self.segment_stats.clone().into_iter(){
+            sorting_vec.push((k.get_segment_id(), v.access_count));
+        }
+
+        sorting_vec.sort_by(|a, b| a.1.cmp(&b.1));
+        for (seg_id, _) in sorting_vec{
+            pinned_list.push(seg_id);
+        }
+        self.current_pinned_list = pinned_list; 
+    }
     
 }
