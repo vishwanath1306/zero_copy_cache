@@ -77,8 +77,11 @@ where
         }
     }
 
-    pub fn get_segment_access_count(&self, segment: S) -> i64 {
-        self.segment_stats.get(&segment).unwrap().get_access_count()
+    pub fn get_segment_access_count(&self, segment: S) -> Option<i64> {
+        match self.segment_stats.get(&segment) {
+            Some(seg) => Some(seg.get_access_count()),
+            None => None,
+        }
     }
 
     pub fn calculate_hotset(&mut self) {
