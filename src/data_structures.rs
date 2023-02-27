@@ -42,7 +42,7 @@ impl Stats {
 }
 
 pub trait DatapathSlab {
-    type SlabId: Hash + PartialEq + Eq + Clone + Copy;
+    type SlabId: Hash + PartialEq + Eq + Clone + Copy + std::fmt::Debug;
     type IOInfo: PartialEq + Eq + Clone + Copy;
     type PinningState: std::fmt::Debug + Send + Sync;
     type PrivateInfo;
@@ -82,7 +82,7 @@ pub trait DatapathSlab {
 #[derive(Debug)]
 pub struct DatapathSegment<Slab>
 where
-    Slab: DatapathSlab,
+    Slab: DatapathSlab + std::fmt::Debug,
 {
     start_address: *mut ::std::os::raw::c_void,
     num_pages: usize,
@@ -91,12 +91,12 @@ where
     id: (Slab::SlabId, usize),
 }
 
-unsafe impl<Slab> Send for DatapathSegment<Slab> where Slab: DatapathSlab {}
-unsafe impl<Slab> Sync for DatapathSegment<Slab> where Slab: DatapathSlab {}
+unsafe impl<Slab> Send for DatapathSegment<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
+unsafe impl<Slab> Sync for DatapathSegment<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
 
 impl<Slab> DatapathSegment<Slab>
 where
-    Slab: DatapathSlab,
+    Slab: DatapathSlab + std::fmt::Debug,
 {
     pub fn new(
         start_address: *mut ::std::os::raw::c_void,
@@ -247,10 +247,16 @@ where
 
     pub fn pin_and_unpin_thread(&mut self, _priv_info: Slab::PrivateInfo) {
         // every second, pin and unpin stuff
-        todo!();
     }
 
-    pub fn initialize_slab(&mut self, slab: &Slab, num_registrations: usize) {
+    pub fn initialize_slab(
+        &mut self,
+        slab: &Slab,
+        num_registrations: usize,
+        register_at_start: bool,
+        priv_info: Slab::PrivateInfo,
+    ) {
+        tracing::debug!("Initializing slab with {} registrations", num_registrations);
         let pages_per_registration = slab.get_total_num_pages() / num_registrations;
         let reg_size = pages_per_registration * slab.get_page_size_as_num();
         let segs: Vec<Arc<Mutex<(DatapathSegment<Slab>, usize)>>> = (0..num_registrations)
@@ -266,7 +272,7 @@ where
                     ),
                     0usize,
                 )));
-                if let Ok(s) = seg.lock() {
+                if let Ok(ref mut s) = seg.lock() {
                     for page in s.0.get_4kb_pages() {
                         self.page_cache_4kb.insert(page, (slab.get_slab_id(), reg));
                     }
@@ -276,7 +282,12 @@ where
                     for page in s.0.get_1gb_pages() {
                         self.page_cache_1gb.insert(page, (slab.get_slab_id(), reg));
                     }
+                    // if register at start, register slab
+                    if register_at_start {
+                        s.0.register(&priv_info);
+                    }
                 }
+
                 seg
             })
             .collect();
@@ -338,6 +349,7 @@ where
     ) -> Option<(Slab::SlabId, Slab::IOInfo)> {
         match self.get_segment_id(buf) {
             Some(segment_id) => {
+                tracing::debug!("IO was in segment: {:?}", segment_id);
                 // update access to segment
                 self.update_stats(segment_id);
 

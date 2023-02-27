@@ -1,7 +1,6 @@
 //! This module contains ways to interface with custom memory allocation/registration.
 //! How we will exactly achieve that, I am not sure yet.
 //! It seems like standard library containers don't allow custom allocators yet.
-pub const PAGESIZE: usize = 4096;
 const PGSHIFT_4KB: usize = 12;
 const PGSHIFT_2MB: usize = 21;
 const PGSHIFT_1GB: usize = 30;
@@ -46,6 +45,7 @@ pub fn closest_4k_page(addr: *const u8) -> usize {
 #[inline]
 pub fn closest_2mb_page(addr: *const u8) -> usize {
     let off = pgoff2mb(addr);
+    tracing::debug!("Off: {}, addr as usize, {}", off, addr as usize);
     addr as usize - off
 }
 
