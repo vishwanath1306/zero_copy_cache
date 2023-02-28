@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use std::{collections::HashMap, hash::Hash};
+use std::{collections::HashMap, hash::Hash, collections::HashSet};
 
 use crate::pagesizes;
 
@@ -338,9 +338,23 @@ where
     }
 
     /// Pinning unpinning thread can call this to unpin/pin segments based on current hotset.
-    pub fn update_hotset(&mut self) {
+    pub fn update_hotset(&mut self) ->  (HashSet<&'static (<Slab as DatapathSlab>::SlabId, usize)>, 
+    HashSet<&'static (<Slab as DatapathSlab>::SlabId, usize)>){
         // TODO: Call pin and unpin on pinning delta derived from current pinning list
-        unimplemented!();
+        let new_pinned_list = self.calculate_hotset_v0();
+
+        let existing_pinned_hashset: HashSet<(Slab::SlabId, usize)> = HashSet::from_iter(self.current_pinned_list.iter().cloned());
+        let new_pinned_hashset: HashSet<(Slab::SlabId, usize)> = HashSet::from_iter(new_pinned_list.iter().cloned());
+
+        let existing_pinned_hashset_clone = existing_pinned_hashset.clone();
+        let new_pinned_hashset_clone = new_pinned_hashset.clone();
+        
+        let unpin_list: HashSet<_> = existing_pinned_hashset.difference(&new_pinned_hashset).collect();
+        let pin_list: HashSet<_> = new_pinned_hashset_clone.difference(&existing_pinned_hashset_clone).collect();
+        
+        (unpin_list, pin_list)
+        // let existing_pinned_hashset = HashSet::from(self.current_pinned_list);
+        // let existing_pinned_hashset = HashSet::from(new_pinned_list);
     }
 
     pub fn record_access_and_get_io_info_if_pinned(
@@ -404,9 +418,12 @@ where
         }
     }
 
-    pub fn calculate_hotset(&mut self) {
+    pub fn calculate_hotset_v0(&mut self) -> Vec<(Slab::SlabId, usize)>{
+
+        // TODO: Convert Vector to HashSet. 
+        
         let mut sorting_vec: Vec<((Slab::SlabId, usize), i64)> = Vec::new();
-        let mut pinned_list = Vec::new();
+        let mut pinned_list = HashSet::new();
         for (k, v) in self.segment_stats.clone().into_iter() {
             sorting_vec.push((k, v.access_count));
         }
@@ -415,6 +432,7 @@ where
         for (seg_id, _) in sorting_vec {
             pinned_list.push(seg_id);
         }
-        self.current_pinned_list = pinned_list;
+        
+        pinned_list
     }
 }
