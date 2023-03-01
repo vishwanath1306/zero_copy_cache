@@ -1,6 +1,9 @@
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{SystemTime, Duration};
+use std::thread::sleep;
 use std::{collections::HashMap, hash::Hash, collections::HashSet};
+
+use tracing_subscriber::fmt::time;
 
 use crate::pagesizes;
 
@@ -200,11 +203,13 @@ where
     Slab: DatapathSlab + std::fmt::Debug, // C: CacheBuilder<S>
 {
     /// Stats maintained for each segment.
+    // TODO: Work on locking this 
     pub segment_stats: SegmentStatMap<(Slab::SlabId, usize)>,
     /// Current hotset.
-    pub current_pinned_list: Vec<(Slab::SlabId, usize)>,
+    pub current_pinned_list: HashSet<(Slab::SlabId, usize)>,
     /// Actual segments themselves to be pinned or unpinned, along with associated metadata.
-    segments: HashMap<(Slab::SlabId, usize), Arc<Mutex<(DatapathSegment<Slab>, usize)>>>,
+    // TODO: Convert the segment part into a struct
+    segments: HashMap<(Slab::SlabId, usize), Arc<Mutex<(DatapathSegment<Slab>, usize, bool)>>>,
     /// Cache page addresses to segment ID of size 2mb.
     page_cache_2mb: HashMap<usize, (Slab::SlabId, usize)>,
     /// Cache page addresses to segment ID for size 4kb.
@@ -237,7 +242,7 @@ where
     pub fn new() -> Self {
         ZeroCopyCache {
             segment_stats: SegmentStatMap::<(Slab::SlabId, usize)>::default(),
-            current_pinned_list: Vec::default(),
+            current_pinned_list: HashSet::default(),
             segments: HashMap::default(),
             page_cache_2mb: HashMap::default(),
             page_cache_4kb: HashMap::default(),
@@ -245,8 +250,47 @@ where
         }
     }
 
-    pub fn pin_and_unpin_thread(&mut self, _priv_info: Slab::PrivateInfo) {
-        // every second, pin and unpin stuff
+    pub fn pin_and_unpin_thread(&mut self, priv_info: Slab::PrivateInfo) {
+        loop {
+            let new_pinned_list = self.calculate_hotset_v0();
+
+            for item in self.current_pinned_list.difference(&new_pinned_list){
+                // UNPINNING THE ITEMS
+                let segment = self.segments.get(item);
+                match segment{
+                    Some(extracted_segment) => {
+                        loop {
+                            let mut locked_segment = extracted_segment.lock().unwrap();
+                            locked_segment.2 = true;
+                            if locked_segment.1 == 0 {
+                                locked_segment.0.unregister();
+                                locked_segment.2 = false; 
+                                break;
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::error!("Segment ID: {:?} Not found", item.0);
+                    }
+                }
+            }
+
+            for item in new_pinned_list.difference(&self.current_pinned_list){
+                let segment = self.segments.get(item);
+                match segment{
+                    Some(extracted_segment) => {
+                        let mut locked_segment = extracted_segment.lock().unwrap();
+                        locked_segment.0.register(&priv_info);
+                    },
+                    None => {
+                        tracing::error!("Segment ID: {:?} Not found", item.0);
+                    }
+                }
+            }
+
+            self.current_pinned_list = new_pinned_list;
+            sleep(Duration::new(1, 0));
+        }
     }
 
     pub fn initialize_slab(
@@ -259,7 +303,7 @@ where
         tracing::debug!("Initializing slab with {} registrations", num_registrations);
         let pages_per_registration = slab.get_total_num_pages() / num_registrations;
         let reg_size = pages_per_registration * slab.get_page_size_as_num();
-        let segs: Vec<Arc<Mutex<(DatapathSegment<Slab>, usize)>>> = (0..num_registrations)
+        let segs: Vec<Arc<Mutex<(DatapathSegment<Slab>, usize, bool)>>> = (0..num_registrations)
             .map(|reg| {
                 let start_address = slab.get_start_address() as usize + reg_size * reg;
                 let seg = Arc::new(Mutex::new((
@@ -271,6 +315,7 @@ where
                         slab,
                     ),
                     0usize,
+                    false
                 )));
                 if let Ok(ref mut s) = seg.lock() {
                     for page in s.0.get_4kb_pages() {
@@ -338,23 +383,22 @@ where
     }
 
     /// Pinning unpinning thread can call this to unpin/pin segments based on current hotset.
-    pub fn update_hotset(&mut self) ->  (HashSet<&'static (<Slab as DatapathSlab>::SlabId, usize)>, 
-    HashSet<&'static (<Slab as DatapathSlab>::SlabId, usize)>){
+    pub fn update_hotset(&mut self){
         // TODO: Call pin and unpin on pinning delta derived from current pinning list
-        let new_pinned_list = self.calculate_hotset_v0();
+        // let new_pinned_hashset = self.calculate_hotset_v0();
 
-        let existing_pinned_hashset: HashSet<(Slab::SlabId, usize)> = HashSet::from_iter(self.current_pinned_list.iter().cloned());
-        let new_pinned_hashset: HashSet<(Slab::SlabId, usize)> = HashSet::from_iter(new_pinned_list.iter().cloned());
+        // let existing_pinned_hashset_clone = self.current_pinned_list.clone();
+        // let new_pinned_hashset_clone = new_pinned_hashset.clone();
 
-        let existing_pinned_hashset_clone = existing_pinned_hashset.clone();
-        let new_pinned_hashset_clone = new_pinned_hashset.clone();
+        // // let unpin_list: HashSet<_> = (&existing_pinned_hashset_clone - &new_pinned_hashset_clone).iter().cloned().collect();
+        // // let pin_list = (&new_pinned_hashset_clone - &existing_pinned_hashset_clone).iter().cloned().collect();
+        // let unpin_list: HashSet<(<Slab as DatapathSlab>::SlabId, _) = self.current_pinned_list.difference(&new_pinned_hashset).collect();
+        // let pin_list = new_pinned_hashset_clone.difference(&existing_pinned_hashset_clone).collect();
         
-        let unpin_list: HashSet<_> = existing_pinned_hashset.difference(&new_pinned_hashset).collect();
-        let pin_list: HashSet<_> = new_pinned_hashset_clone.difference(&existing_pinned_hashset_clone).collect();
-        
-        (unpin_list, pin_list)
+        // (unpin_list, pin_list)
         // let existing_pinned_hashset = HashSet::from(self.current_pinned_list);
         // let existing_pinned_hashset = HashSet::from(new_pinned_list);
+        unimplemented!()
     }
 
     pub fn record_access_and_get_io_info_if_pinned(
@@ -376,6 +420,10 @@ where
                             if mutex.0.is_pinned() {
                                 // increment IO count
                                 mutex.1 += 1;
+                                // Checking for pinned segment
+                                if mutex.2{
+                                    return None;
+                                }
                                 // return segment id and io info to caller
                                 let slab_id = segment_id.0;
                                 return Some((slab_id, mutex.0.get_io_info()));
@@ -418,7 +466,7 @@ where
         }
     }
 
-    pub fn calculate_hotset_v0(&mut self) -> Vec<(Slab::SlabId, usize)>{
+    pub fn calculate_hotset_v0(&mut self) -> HashSet<(Slab::SlabId, usize)>{
 
         // TODO: Convert Vector to HashSet. 
         
@@ -430,7 +478,7 @@ where
 
         sorting_vec.sort_by(|a, b| a.1.cmp(&b.1));
         for (seg_id, _) in sorting_vec {
-            pinned_list.push(seg_id);
+            pinned_list.insert(seg_id);
         }
         
         pinned_list
