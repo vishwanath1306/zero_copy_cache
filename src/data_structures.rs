@@ -1,6 +1,8 @@
+use std::default;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
-use std::{collections::HashMap, hash::Hash};
+use std::time::{SystemTime, Duration};
+use std::thread::sleep;
+use std::{collections::HashMap, hash::Hash, collections::HashSet};
 
 use crate::pagesizes;
 
@@ -200,11 +202,13 @@ where
     Slab: DatapathSlab + std::fmt::Debug, // C: CacheBuilder<S>
 {
     /// Stats maintained for each segment.
-    pub segment_stats: SegmentStatMap<(Slab::SlabId, usize)>,
+    // TODO: Work on locking this 
+    pub segment_stats: Arc<Mutex<SegmentStatMap<(Slab::SlabId, usize)>>>,
     /// Current hotset.
-    pub current_pinned_list: Vec<(Slab::SlabId, usize)>,
+    pub current_pinned_list: HashSet<(Slab::SlabId, usize)>,
     /// Actual segments themselves to be pinned or unpinned, along with associated metadata.
-    segments: HashMap<(Slab::SlabId, usize), Arc<Mutex<(DatapathSegment<Slab>, usize)>>>,
+    // TODO: Convert the segment part into a struct
+    segments: HashMap<(Slab::SlabId, usize), Arc<Mutex<(DatapathSegment<Slab>, usize, bool)>>>,
     /// Cache page addresses to segment ID of size 2mb.
     page_cache_2mb: HashMap<usize, (Slab::SlabId, usize)>,
     /// Cache page addresses to segment ID for size 4kb.
@@ -236,8 +240,9 @@ where
 {
     pub fn new() -> Self {
         ZeroCopyCache {
-            segment_stats: SegmentStatMap::<(Slab::SlabId, usize)>::default(),
-            current_pinned_list: Vec::default(),
+            // segment_stats: Arc::new(SegmentStatMap::<(Slab::SlabId, usize)>::default()),
+            segment_stats: Arc::new(Mutex::new(SegmentStatMap::<(Slab::SlabId, usize)>::default())),
+            current_pinned_list: HashSet::default(),
             segments: HashMap::default(),
             page_cache_2mb: HashMap::default(),
             page_cache_4kb: HashMap::default(),
@@ -245,8 +250,48 @@ where
         }
     }
 
-    pub fn pin_and_unpin_thread(&mut self, _priv_info: Slab::PrivateInfo) {
-        // every second, pin and unpin stuff
+    pub fn pin_and_unpin_thread(&mut self, priv_info: Slab::PrivateInfo) {
+        loop {
+            let new_pinned_list = self.calculate_hotset_v0();
+            // println!("The current hotset is: {:?}", new_pinned_list);
+            tracing::debug!("The segment stats is: {:?}", self.segment_stats);
+            for item in self.current_pinned_list.difference(&new_pinned_list){
+                // UNPINNING THE ITEMS
+                let segment = self.segments.get(item);
+                match segment{
+                    Some(extracted_segment) => {
+                        loop {
+                            let mut locked_segment = extracted_segment.lock().unwrap();
+                            locked_segment.2 = true;
+                            if locked_segment.1 == 0 {
+                                locked_segment.0.unregister();
+                                locked_segment.2 = false; 
+                                break;
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::error!("Segment ID: {:?} Not found", item.0);
+                    }
+                }
+            }
+
+            for item in new_pinned_list.difference(&self.current_pinned_list){
+                let segment = self.segments.get(item);
+                match segment{
+                    Some(extracted_segment) => {
+                        let mut locked_segment = extracted_segment.lock().unwrap();
+                        locked_segment.0.register(&priv_info);
+                    },
+                    None => {
+                        tracing::error!("Segment ID: {:?} Not found", item.0);
+                    }
+                }
+            }
+
+            self.current_pinned_list = new_pinned_list;
+            sleep(Duration::new(1, 0));
+        }
     }
 
     pub fn initialize_slab(
@@ -259,7 +304,7 @@ where
         tracing::debug!("Initializing slab with {} registrations", num_registrations);
         let pages_per_registration = slab.get_total_num_pages() / num_registrations;
         let reg_size = pages_per_registration * slab.get_page_size_as_num();
-        let segs: Vec<Arc<Mutex<(DatapathSegment<Slab>, usize)>>> = (0..num_registrations)
+        let segs: Vec<Arc<Mutex<(DatapathSegment<Slab>, usize, bool)>>> = (0..num_registrations)
             .map(|reg| {
                 let start_address = slab.get_start_address() as usize + reg_size * reg;
                 let seg = Arc::new(Mutex::new((
@@ -271,6 +316,7 @@ where
                         slab,
                     ),
                     0usize,
+                    false
                 )));
                 if let Ok(ref mut s) = seg.lock() {
                     for page in s.0.get_4kb_pages() {
@@ -337,12 +383,6 @@ where
         }
     }
 
-    /// Pinning unpinning thread can call this to unpin/pin segments based on current hotset.
-    pub fn update_hotset(&mut self) {
-        // TODO: Call pin and unpin on pinning delta derived from current pinning list
-        unimplemented!();
-    }
-
     pub fn record_access_and_get_io_info_if_pinned(
         &mut self,
         buf: &[u8],
@@ -362,6 +402,10 @@ where
                             if mutex.0.is_pinned() {
                                 // increment IO count
                                 mutex.1 += 1;
+                                // Checking for pinned segment
+                                if mutex.2{
+                                    return None;
+                                }
                                 // return segment id and io info to caller
                                 let slab_id = segment_id.0;
                                 return Some((slab_id, mutex.0.get_io_info()));
@@ -386,35 +430,42 @@ where
     }
 
     pub fn update_stats(&mut self, segment_id: (Slab::SlabId, usize)) {
-        if self.segment_stats.contains_key(&segment_id) {
-            self.segment_stats
-                .get_mut(&segment_id)
-                .unwrap()
-                .update_stats();
-        } else {
-            // Stats constructor should automatically increment to 1
-            self.segment_stats.insert(segment_id, Stats::new());
+        // println!("Inside update stats");
+        let mut unlocked_segment_stats = self.segment_stats.lock().unwrap();
+        if unlocked_segment_stats.contains_key(&segment_id){
+            unlocked_segment_stats.get_mut(&segment_id)
+            .unwrap()
+            .update_stats();
+        }else {
+            unlocked_segment_stats.insert(segment_id, Stats::new());
         }
     }
 
     pub fn get_segment_access_count(&self, segment_id: (Slab::SlabId, usize)) -> Option<i64> {
-        match self.segment_stats.get(&segment_id) {
+        let cloned_segment = self.segment_stats.lock().unwrap();
+        match cloned_segment.get(&segment_id) {
             Some(s) => Some(s.get_access_count()),
-            None => None,
+            None => None
         }
     }
 
-    pub fn calculate_hotset(&mut self) {
+    /// Currently ineffecient strategy of sorting through the vector and getting the top segments. 
+    /// Need better strategies to performance these actions.
+    pub fn calculate_hotset_v0(&mut self) -> HashSet<(Slab::SlabId, usize)>{
+
         let mut sorting_vec: Vec<((Slab::SlabId, usize), i64)> = Vec::new();
-        let mut pinned_list = Vec::new();
-        for (k, v) in self.segment_stats.clone().into_iter() {
+        let mut pinned_list = HashSet::new();
+        let cloned_segment_list = self.segment_stats.lock().unwrap();
+        let curr_val = cloned_segment_list.clone();
+        std::mem::drop(cloned_segment_list);
+        for (k, v) in curr_val.clone().into_iter() {
             sorting_vec.push((k, v.access_count));
         }
-
         sorting_vec.sort_by(|a, b| a.1.cmp(&b.1));
         for (seg_id, _) in sorting_vec {
-            pinned_list.push(seg_id);
+            pinned_list.insert(seg_id);
         }
-        self.current_pinned_list = pinned_list;
+        
+        pinned_list
     }
 }
