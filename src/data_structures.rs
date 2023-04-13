@@ -1,9 +1,8 @@
+use std::default;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, Duration};
 use std::thread::sleep;
 use std::{collections::HashMap, hash::Hash, collections::HashSet};
-
-use tracing_subscriber::fmt::time;
 
 use crate::pagesizes;
 
@@ -204,7 +203,7 @@ where
 {
     /// Stats maintained for each segment.
     // TODO: Work on locking this 
-    pub segment_stats: SegmentStatMap<(Slab::SlabId, usize)>,
+    pub segment_stats: Arc<Mutex<SegmentStatMap<(Slab::SlabId, usize)>>>,
     /// Current hotset.
     pub current_pinned_list: HashSet<(Slab::SlabId, usize)>,
     /// Actual segments themselves to be pinned or unpinned, along with associated metadata.
@@ -241,7 +240,8 @@ where
 {
     pub fn new() -> Self {
         ZeroCopyCache {
-            segment_stats: SegmentStatMap::<(Slab::SlabId, usize)>::default(),
+            // segment_stats: Arc::new(SegmentStatMap::<(Slab::SlabId, usize)>::default()),
+            segment_stats: Arc::new(Mutex::new(SegmentStatMap::<(Slab::SlabId, usize)>::default())),
             current_pinned_list: HashSet::default(),
             segments: HashMap::default(),
             page_cache_2mb: HashMap::default(),
@@ -253,7 +253,8 @@ where
     pub fn pin_and_unpin_thread(&mut self, priv_info: Slab::PrivateInfo) {
         loop {
             let new_pinned_list = self.calculate_hotset_v0();
-
+            // println!("The current hotset is: {:?}", new_pinned_list);
+            tracing::debug!("The segment stats is: {:?}", self.segment_stats);
             for item in self.current_pinned_list.difference(&new_pinned_list){
                 // UNPINNING THE ITEMS
                 let segment = self.segments.get(item);
@@ -382,25 +383,6 @@ where
         }
     }
 
-    /// Pinning unpinning thread can call this to unpin/pin segments based on current hotset.
-    pub fn update_hotset(&mut self){
-        // TODO: Call pin and unpin on pinning delta derived from current pinning list
-        // let new_pinned_hashset = self.calculate_hotset_v0();
-
-        // let existing_pinned_hashset_clone = self.current_pinned_list.clone();
-        // let new_pinned_hashset_clone = new_pinned_hashset.clone();
-
-        // // let unpin_list: HashSet<_> = (&existing_pinned_hashset_clone - &new_pinned_hashset_clone).iter().cloned().collect();
-        // // let pin_list = (&new_pinned_hashset_clone - &existing_pinned_hashset_clone).iter().cloned().collect();
-        // let unpin_list: HashSet<(<Slab as DatapathSlab>::SlabId, _) = self.current_pinned_list.difference(&new_pinned_hashset).collect();
-        // let pin_list = new_pinned_hashset_clone.difference(&existing_pinned_hashset_clone).collect();
-        
-        // (unpin_list, pin_list)
-        // let existing_pinned_hashset = HashSet::from(self.current_pinned_list);
-        // let existing_pinned_hashset = HashSet::from(new_pinned_list);
-        unimplemented!()
-    }
-
     pub fn record_access_and_get_io_info_if_pinned(
         &mut self,
         buf: &[u8],
@@ -448,34 +430,37 @@ where
     }
 
     pub fn update_stats(&mut self, segment_id: (Slab::SlabId, usize)) {
-        if self.segment_stats.contains_key(&segment_id) {
-            self.segment_stats
-                .get_mut(&segment_id)
-                .unwrap()
-                .update_stats();
-        } else {
-            // Stats constructor should automatically increment to 1
-            self.segment_stats.insert(segment_id, Stats::new());
+        // println!("Inside update stats");
+        let mut unlocked_segment_stats = self.segment_stats.lock().unwrap();
+        if unlocked_segment_stats.contains_key(&segment_id){
+            unlocked_segment_stats.get_mut(&segment_id)
+            .unwrap()
+            .update_stats();
+        }else {
+            unlocked_segment_stats.insert(segment_id, Stats::new());
         }
     }
 
     pub fn get_segment_access_count(&self, segment_id: (Slab::SlabId, usize)) -> Option<i64> {
-        match self.segment_stats.get(&segment_id) {
+        let cloned_segment = self.segment_stats.lock().unwrap();
+        match cloned_segment.get(&segment_id) {
             Some(s) => Some(s.get_access_count()),
-            None => None,
+            None => None
         }
     }
 
+    /// Currently ineffecient strategy of sorting through the vector and getting the top segments. 
+    /// Need better strategies to performance these actions.
     pub fn calculate_hotset_v0(&mut self) -> HashSet<(Slab::SlabId, usize)>{
 
-        // TODO: Convert Vector to HashSet. 
-        
         let mut sorting_vec: Vec<((Slab::SlabId, usize), i64)> = Vec::new();
         let mut pinned_list = HashSet::new();
-        for (k, v) in self.segment_stats.clone().into_iter() {
+        let cloned_segment_list = self.segment_stats.lock().unwrap();
+        let curr_val = cloned_segment_list.clone();
+        std::mem::drop(cloned_segment_list);
+        for (k, v) in curr_val.clone().into_iter() {
             sorting_vec.push((k, v.access_count));
         }
-
         sorting_vec.sort_by(|a, b| a.1.cmp(&b.1));
         for (seg_id, _) in sorting_vec {
             pinned_list.insert(seg_id);
