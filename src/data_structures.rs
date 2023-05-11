@@ -252,9 +252,9 @@ where
 
     pub fn pin_and_unpin_thread(&mut self, priv_info: Slab::PrivateInfo) {
         loop {
-            let new_pinned_list = self.calculate_hotset_v0();
-            // println!("The current hotset is: {:?}", new_pinned_list);
-            tracing::debug!("The segment stats is: {:?}", self.segment_stats);
+            let new_pinned_list = self.return_all_segments_sized();
+            tracing::debug!("The current hotset is: {:?}", new_pinned_list);
+            // tracing::debug!("The segment stats is: {:?}", self.segment_stats);
             for item in self.current_pinned_list.difference(&new_pinned_list){
                 // UNPINNING THE ITEMS
                 let segment = self.segments.get(item);
@@ -264,6 +264,7 @@ where
                             let mut locked_segment = extracted_segment.lock().unwrap();
                             locked_segment.2 = true;
                             if locked_segment.1 == 0 {
+                                tracing::debug!("Unpinning segment: {:?}", locked_segment);
                                 locked_segment.0.unregister();
                                 locked_segment.2 = false; 
                                 break;
@@ -282,6 +283,7 @@ where
                     Some(extracted_segment) => {
                         let mut locked_segment = extracted_segment.lock().unwrap();
                         locked_segment.0.register(&priv_info);
+                        tracing::debug!("Pinning segment: {:?}", locked_segment);
                     },
                     None => {
                         tracing::error!("Segment ID: {:?} Not found", item.0);
@@ -468,4 +470,16 @@ where
         
         pinned_list
     }
+
+     pub fn return_all_segments_sized(&mut self) -> HashSet<(Slab::SlabId, usize)>{
+        tracing::debug!("Going into the return all segments");
+        let mut pinned_list = HashSet::new();
+        let cloned_segment_list = self.segment_stats.lock().unwrap();
+        let current_values = cloned_segment_list.clone();
+        std::mem::drop(cloned_segment_list);
+        for (seg_id, _) in current_values{
+            pinned_list.insert(seg_id);
+        }
+        pinned_list
+     }
 }
