@@ -11,10 +11,14 @@ pub const DEFAULT_CACHE_SIZE: usize = 10_000;
 
 pub type SegmentStatMap<ID> = HashMap<ID, Stats>;
 
+// =========================================================
+
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 pub struct Stats {
-    pub access_count: i64,
+    pub access_count: u64,
     pub last_access_time: SystemTime,
+    pub last_pinned_time: SystemTime,
+    pub last_unpinned_time: SystemTime,
 }
 
 impl Stats {
@@ -22,6 +26,8 @@ impl Stats {
         Stats {
             access_count: 1,
             last_access_time: SystemTime::now(),
+            last_pinned_time: SystemTime::UNIX_EPOCH,
+            last_unpinned_time: SystemTime::UNIX_EPOCH,
         }
     }
 
@@ -34,6 +40,14 @@ impl Stats {
         self.last_access_time = SystemTime::now();
     }
 
+    pub fn update_pinned_time(&mut self) {
+        self.last_pinned_time = SystemTime::now();
+    }
+
+    pub fn update_unpinned_time(&mut self) {
+        self.last_unpinned_time = SystemTime::now();
+    }
+
     pub fn increment_access_count(&mut self) {
         self.access_count += 1;
     }
@@ -41,7 +55,67 @@ impl Stats {
     pub fn get_access_count(&self) -> i64 {
         self.access_count
     }
+
+    pub fn get_last_access_time(&self) -> SystemTime{
+        self.last_access_time
+    }
+
+    pub fn get_last_pinned_time(&self) -> SystemTime{
+        self.last_pinned_time
+    }
+
+    pub fn get_last_unpinned_time(&self) -> SystemTime{
+        self.last_unpinned_time
+    }
+
 }
+
+// =========================================================
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+pub struct Metrics{
+
+    pub total_count: u64, 
+    pub hit_count: u64, 
+    pub miss_count: u64
+
+}
+
+impl Metrics {
+    pub fn new() -> Self {
+        Metrics {
+            total_count: 0, 
+            hit_count: 0,
+            miss_count: 0
+        }
+    }
+
+    pub fn update_total_count(&mut self) {
+        self.total_count += 1;
+    }
+
+    pub fn update_hit_count(&mut self) {
+        self.hit_count += 1;
+    }
+
+    pub fn update_miss_count(&mut self) {
+        self.miss_count += 1;
+    }
+
+    pub fn get_total_count(&mut self) -> u64 {
+        self.total_count
+    }
+
+    pub fn get_hit_count(&mut self) -> u64 {
+        self.hit_count
+    }
+
+    pub fn get_miss_count(&mut self) -> u64 {
+        self.miss_count
+    }
+
+}
+
+// =========================================================
 
 pub trait DatapathSlab {
     type SlabId: Hash + PartialEq + Eq + Clone + Copy + std::fmt::Debug;
@@ -432,7 +506,6 @@ where
     }
 
     pub fn update_stats(&mut self, segment_id: (Slab::SlabId, usize)) {
-        // println!("Inside update stats");
         let mut unlocked_segment_stats = self.segment_stats.lock().unwrap();
         if unlocked_segment_stats.contains_key(&segment_id){
             unlocked_segment_stats.get_mut(&segment_id)
