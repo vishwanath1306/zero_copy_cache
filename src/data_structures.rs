@@ -1,8 +1,8 @@
 use std::default;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, Duration};
 use std::thread::sleep;
-use std::{collections::HashMap, hash::Hash, collections::HashSet};
+use std::time::{Duration, SystemTime};
+use std::{collections::HashMap, collections::HashSet, hash::Hash};
 
 use crate::pagesizes;
 
@@ -202,7 +202,7 @@ where
     Slab: DatapathSlab + std::fmt::Debug, // C: CacheBuilder<S>
 {
     /// Stats maintained for each segment.
-    // TODO: Work on locking this 
+    // TODO: Work on locking this
     pub segment_stats: Arc<Mutex<SegmentStatMap<(Slab::SlabId, usize)>>>,
     /// Current hotset.
     pub current_pinned_list: HashSet<(Slab::SlabId, usize)>,
@@ -241,7 +241,9 @@ where
     pub fn new() -> Self {
         ZeroCopyCache {
             // segment_stats: Arc::new(SegmentStatMap::<(Slab::SlabId, usize)>::default()),
-            segment_stats: Arc::new(Mutex::new(SegmentStatMap::<(Slab::SlabId, usize)>::default())),
+            segment_stats: Arc::new(Mutex::new(
+                SegmentStatMap::<(Slab::SlabId, usize)>::default(),
+            )),
             current_pinned_list: HashSet::default(),
             segments: HashMap::default(),
             page_cache_2mb: HashMap::default(),
@@ -255,36 +257,34 @@ where
             let new_pinned_list = self.return_all_segments_sized();
             tracing::debug!("The current hotset is: {:?}", new_pinned_list);
             // tracing::debug!("The segment stats is: {:?}", self.segment_stats);
-            for item in self.current_pinned_list.difference(&new_pinned_list){
+            for item in self.current_pinned_list.difference(&new_pinned_list) {
                 // UNPINNING THE ITEMS
                 let segment = self.segments.get(item);
-                match segment{
-                    Some(extracted_segment) => {
-                        loop {
-                            let mut locked_segment = extracted_segment.lock().unwrap();
-                            locked_segment.2 = true;
-                            if locked_segment.1 == 0 {
-                                tracing::debug!("Unpinning segment: {:?}", locked_segment);
-                                locked_segment.0.unregister();
-                                locked_segment.2 = false; 
-                                break;
-                            }
+                match segment {
+                    Some(extracted_segment) => loop {
+                        let mut locked_segment = extracted_segment.lock().unwrap();
+                        locked_segment.2 = true;
+                        if locked_segment.1 == 0 {
+                            tracing::debug!("Unpinning segment: {:?}", locked_segment);
+                            locked_segment.0.unregister();
+                            locked_segment.2 = false;
+                            break;
                         }
-                    }
+                    },
                     None => {
                         tracing::error!("Segment ID: {:?} Not found", item.0);
                     }
                 }
             }
 
-            for item in new_pinned_list.difference(&self.current_pinned_list){
+            for item in new_pinned_list.difference(&self.current_pinned_list) {
                 let segment = self.segments.get(item);
-                match segment{
+                match segment {
                     Some(extracted_segment) => {
                         let mut locked_segment = extracted_segment.lock().unwrap();
                         locked_segment.0.register(&priv_info);
                         tracing::debug!("Pinning segment: {:?}", locked_segment);
-                    },
+                    }
                     None => {
                         tracing::error!("Segment ID: {:?} Not found", item.0);
                     }
@@ -318,7 +318,7 @@ where
                         slab,
                     ),
                     0usize,
-                    false
+                    false,
                 )));
                 if let Ok(ref mut s) = seg.lock() {
                     for page in s.0.get_4kb_pages() {
@@ -405,7 +405,7 @@ where
                                 // increment IO count
                                 mutex.1 += 1;
                                 // Checking for pinned segment
-                                if mutex.2{
+                                if mutex.2 {
                                     return None;
                                 }
                                 // return segment id and io info to caller
@@ -434,11 +434,12 @@ where
     pub fn update_stats(&mut self, segment_id: (Slab::SlabId, usize)) {
         // println!("Inside update stats");
         let mut unlocked_segment_stats = self.segment_stats.lock().unwrap();
-        if unlocked_segment_stats.contains_key(&segment_id){
-            unlocked_segment_stats.get_mut(&segment_id)
-            .unwrap()
-            .update_stats();
-        }else {
+        if unlocked_segment_stats.contains_key(&segment_id) {
+            unlocked_segment_stats
+                .get_mut(&segment_id)
+                .unwrap()
+                .update_stats();
+        } else {
             unlocked_segment_stats.insert(segment_id, Stats::new());
         }
     }
@@ -447,14 +448,13 @@ where
         let cloned_segment = self.segment_stats.lock().unwrap();
         match cloned_segment.get(&segment_id) {
             Some(s) => Some(s.get_access_count()),
-            None => None
+            None => None,
         }
     }
 
-    /// Currently ineffecient strategy of sorting through the vector and getting the top segments. 
+    /// Currently ineffecient strategy of sorting through the vector and getting the top segments.
     /// Need better strategies to performance these actions.
-    pub fn calculate_hotset_v0(&mut self) -> HashSet<(Slab::SlabId, usize)>{
-
+    pub fn calculate_hotset_v0(&mut self) -> HashSet<(Slab::SlabId, usize)> {
         let mut sorting_vec: Vec<((Slab::SlabId, usize), i64)> = Vec::new();
         let mut pinned_list = HashSet::new();
         let cloned_segment_list = self.segment_stats.lock().unwrap();
@@ -467,19 +467,19 @@ where
         for (seg_id, _) in sorting_vec {
             pinned_list.insert(seg_id);
         }
-        
+
         pinned_list
     }
 
-     pub fn return_all_segments_sized(&mut self) -> HashSet<(Slab::SlabId, usize)>{
+    pub fn return_all_segments_sized(&mut self) -> HashSet<(Slab::SlabId, usize)> {
         tracing::debug!("Going into the return all segments");
         let mut pinned_list = HashSet::new();
         let cloned_segment_list = self.segment_stats.lock().unwrap();
         let current_values = cloned_segment_list.clone();
         std::mem::drop(cloned_segment_list);
-        for (seg_id, _) in current_values{
+        for (seg_id, _) in current_values {
             pinned_list.insert(seg_id);
         }
         pinned_list
-     }
+    }
 }
