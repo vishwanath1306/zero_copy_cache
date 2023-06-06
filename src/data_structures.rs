@@ -1,47 +1,251 @@
-use std::default;
-use std::sync::{Arc, Mutex};
-use std::thread::sleep;
-use std::time::{Duration, SystemTime};
-use std::{collections::HashMap, collections::HashSet, hash::Hash};
-
-use crate::pagesizes;
+use super::pagesizes;
+use color_eyre::eyre::{bail, ensure, Result};
+use std::{
+    collections::{HashMap, HashSet, LinkedList},
+    hash::Hash,
+    sync::{Arc, Mutex},
+    thread::sleep,
+    time::Instant,
+};
 
 pub const DEFAULT_CACHE_SIZE: usize = 10_000;
-// TODO: Convert all the page sizes, and stuff to an enum with constants.
 
-pub type SegmentStatMap<ID> = HashMap<ID, Stats>;
-
-#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
-pub struct Stats {
-    pub access_count: i64,
-    pub last_access_time: SystemTime,
+pub trait CacheBuilder<Slab>
+where
+    Slab: DatapathSlab,
+{
+    /// Returns cache builder that returns no more than limit segments.
+    fn new(limit: usize) -> Self
+    where
+        Self: Sized;
+    /// Returns (up to) top n segments that should be pinned.
+    fn return_top_segments_to_pin(&self) -> HashSet<(Slab::SlabId, usize)>;
+    /// Inserts given slab id and returns slab id to evict, if necessary.
+    fn insert_and_evict(&mut self, id: (Slab::SlabId, usize)) -> Option<(Slab::SlabId, usize)>;
+    /// Update access for the given segment.
+    fn update_access(&mut self, id: (Slab::SlabId, usize));
+    /// Resets all segments.
+    fn reset(&mut self);
+    /// Returns current list of pinned segments.
+    fn current_pinned_segments(&self) -> &HashSet<(Slab::SlabId, usize)>;
+    /// Returns number of bytes currently pinned.
+    fn current_bytes_pinned(&self, segment_size: usize) -> usize {
+        self.current_pinned_segments().len() * segment_size
+    }
+    fn set_current_pinned_list(&mut self, list: HashSet<(Slab::SlabId, usize)>);
 }
 
-impl Stats {
-    pub fn new() -> Self {
-        Stats {
-            access_count: 1,
-            last_access_time: SystemTime::now(),
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct OnDemandLruCache<Slab>
+where
+    Slab: DatapathSlab,
+{
+    limit: usize,
+    timestamps: HashMap<(Slab::SlabId, usize), Instant>,
+    current_pinned_list: HashSet<(Slab::SlabId, usize)>,
+}
+
+unsafe impl<Slab> Send for OnDemandLruCache<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
+unsafe impl<Slab> Sync for OnDemandLruCache<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
+
+impl<Slab> CacheBuilder<Slab> for OnDemandLruCache<Slab>
+where
+    Slab: DatapathSlab,
+{
+    fn new(limit: usize) -> Self
+    where
+        Self: Sized,
+    {
+        OnDemandLruCache {
+            limit,
+            timestamps: HashMap::default(),
+            current_pinned_list: HashSet::default(),
         }
     }
 
-    pub fn update_stats(&mut self) {
-        self.last_access_time = SystemTime::now();
-        self.access_count += 1;
+    fn return_top_segments_to_pin(&self) -> HashSet<(Slab::SlabId, usize)> {
+        unimplemented!();
     }
 
-    pub fn update_access_time(&mut self) {
-        self.last_access_time = SystemTime::now();
+    fn insert_and_evict(&mut self, _id: (Slab::SlabId, usize)) -> Option<(Slab::SlabId, usize)> {
+        unimplemented!();
     }
 
-    pub fn increment_access_count(&mut self) {
-        self.access_count += 1;
+    fn update_access(&mut self, id: (Slab::SlabId, usize)) {
+        self.timestamps.insert(id, Instant::now());
     }
 
-    pub fn get_access_count(&self) -> i64 {
-        self.access_count
+    fn reset(&mut self) {
+        unimplemented!();
+    }
+
+    fn current_pinned_segments(&self) -> &HashSet<(Slab::SlabId, usize)> {
+        &self.current_pinned_list
+    }
+
+    fn set_current_pinned_list(&mut self, list: HashSet<(Slab::SlabId, usize)>) {
+        self.current_pinned_list = list;
     }
 }
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct TimestampLruCache<Slab>
+where
+    Slab: DatapathSlab,
+{
+    limit: usize,
+    timestamps: HashMap<(Slab::SlabId, usize), Instant>,
+    current_pinned_list: HashSet<(Slab::SlabId, usize)>,
+}
+
+impl<Slab> CacheBuilder<Slab> for TimestampLruCache<Slab>
+where
+    Slab: DatapathSlab,
+{
+    fn new(limit: usize) -> Self
+    where
+        Self: Sized,
+    {
+        TimestampLruCache {
+            limit,
+            timestamps: HashMap::default(),
+            current_pinned_list: HashSet::default(),
+        }
+    }
+
+    fn return_top_segments_to_pin(&self) -> HashSet<(Slab::SlabId, usize)> {
+        unimplemented!();
+    }
+
+    fn insert_and_evict(&mut self, _id: (Slab::SlabId, usize)) -> Option<(Slab::SlabId, usize)> {
+        unimplemented!();
+    }
+
+    fn update_access(&mut self, id: (Slab::SlabId, usize)) {
+        self.timestamps.insert(id, Instant::now());
+    }
+
+    fn reset(&mut self) {
+        unimplemented!();
+    }
+
+    fn current_pinned_segments(&self) -> &HashSet<(Slab::SlabId, usize)> {
+        &self.current_pinned_list
+    }
+
+    fn set_current_pinned_list(&mut self, list: HashSet<(Slab::SlabId, usize)>) {
+        self.current_pinned_list = list;
+    }
+}
+
+unsafe impl<Slab> Send for TimestampLruCache<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
+unsafe impl<Slab> Sync for TimestampLruCache<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct LinkedListLruCache<Slab>
+where
+    Slab: DatapathSlab,
+{
+    limit: usize,
+    list: LinkedList<(Slab::SlabId, usize)>,
+    current_pinned_list: HashSet<(Slab::SlabId, usize)>,
+}
+
+impl<Slab> CacheBuilder<Slab> for LinkedListLruCache<Slab>
+where
+    Slab: DatapathSlab,
+{
+    fn new(limit: usize) -> Self
+    where
+        Self: Sized,
+    {
+        LinkedListLruCache {
+            limit,
+            list: LinkedList::default(),
+            current_pinned_list: HashSet::default(),
+        }
+    }
+
+    fn return_top_segments_to_pin(&self) -> HashSet<(Slab::SlabId, usize)> {
+        unimplemented!();
+    }
+
+    fn insert_and_evict(&mut self, _id: (Slab::SlabId, usize)) -> Option<(Slab::SlabId, usize)> {
+        unimplemented!();
+    }
+
+    fn update_access(&mut self, _id: (Slab::SlabId, usize)) {
+        unimplemented!();
+    }
+
+    fn reset(&mut self) {
+        unimplemented!();
+    }
+
+    fn current_pinned_segments(&self) -> &HashSet<(Slab::SlabId, usize)> {
+        &self.current_pinned_list
+    }
+
+    fn set_current_pinned_list(&mut self, list: HashSet<(Slab::SlabId, usize)>) {
+        self.current_pinned_list = list;
+    }
+}
+unsafe impl<Slab> Send for LinkedListLruCache<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
+unsafe impl<Slab> Sync for LinkedListLruCache<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct MfuCache<Slab>
+where
+    Slab: DatapathSlab,
+{
+    limit: usize,
+    access_counts: HashMap<(Slab::SlabId, usize), usize>,
+    current_pinned_list: HashSet<(Slab::SlabId, usize)>,
+}
+
+impl<Slab> CacheBuilder<Slab> for MfuCache<Slab>
+where
+    Slab: DatapathSlab,
+{
+    fn new(limit: usize) -> Self
+    where
+        Self: Sized,
+    {
+        MfuCache {
+            limit,
+            access_counts: HashMap::default(),
+            current_pinned_list: HashSet::default(),
+        }
+    }
+
+    fn return_top_segments_to_pin(&self) -> HashSet<(Slab::SlabId, usize)> {
+        unimplemented!();
+    }
+
+    fn insert_and_evict(&mut self, _id: (Slab::SlabId, usize)) -> Option<(Slab::SlabId, usize)> {
+        unimplemented!();
+    }
+
+    fn update_access(&mut self, id: (Slab::SlabId, usize)) {
+        let val = self.access_counts.get(&id).unwrap_or(&0);
+        self.access_counts.insert(id, *val + 1);
+    }
+
+    fn reset(&mut self) {
+        unimplemented!();
+    }
+
+    fn current_pinned_segments(&self) -> &HashSet<(Slab::SlabId, usize)> {
+        &self.current_pinned_list
+    }
+
+    fn set_current_pinned_list(&mut self, list: HashSet<(Slab::SlabId, usize)>) {
+        self.current_pinned_list = list;
+    }
+}
+
+unsafe impl<Slab> Send for MfuCache<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
+unsafe impl<Slab> Sync for MfuCache<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
 
 pub trait DatapathSlab {
     type SlabId: Hash + PartialEq + Eq + Clone + Copy + std::fmt::Debug;
@@ -197,18 +401,24 @@ where
 }
 
 #[derive(Debug)]
-pub struct ZeroCopyCache<Slab>
+pub struct ZeroCopyCache<Slab, CB>
 where
-    Slab: DatapathSlab + std::fmt::Debug, // C: CacheBuilder<S>
+    Slab: DatapathSlab + std::fmt::Debug,
+    CB: CacheBuilder<Slab> + std::fmt::Debug + Clone + PartialEq + Eq + Send + Sync,
 {
-    /// Stats maintained for each segment.
-    // TODO: Work on locking this
-    pub segment_stats: Arc<Mutex<SegmentStatMap<(Slab::SlabId, usize)>>>,
-    /// Current hotset.
-    pub current_pinned_list: HashSet<(Slab::SlabId, usize)>,
+    /// Most bytes that can be pinned at once in bytes.
+    pinning_limit: usize,
+    /// Size of each segment that should be maintained by ZCC in bytes.
+    segment_size: usize,
+    /// Whether to pin on demand,
+    pin_on_demand: bool,
+    /// Time to sleep between pins in pin-unpin thread.
+    sleep_duration: std::time::Duration,
     /// Actual segments themselves to be pinned or unpinned, along with associated metadata.
-    // TODO: Convert the segment part into a struct
     segments: HashMap<(Slab::SlabId, usize), Arc<Mutex<(DatapathSegment<Slab>, usize, bool)>>>,
+    /// Cache module that maintains statistics on segments themselves. TODO: work on more fine
+    /// grained locking.
+    cache_builder: Arc<Mutex<CB>>,
     /// Cache page addresses to segment ID of size 2mb.
     page_cache_2mb: HashMap<usize, (Slab::SlabId, usize)>,
     /// Cache page addresses to segment ID for size 4kb.
@@ -218,14 +428,18 @@ where
     // pub cache_builder: C
 }
 
-impl<Slab> Clone for ZeroCopyCache<Slab>
+impl<Slab, CB> Clone for ZeroCopyCache<Slab, CB>
 where
     Slab: DatapathSlab + std::fmt::Debug,
+    CB: CacheBuilder<Slab> + std::fmt::Debug + Clone + PartialEq + Eq + Send + Sync,
 {
     fn clone(&self) -> Self {
         ZeroCopyCache {
-            segment_stats: self.segment_stats.clone(),
-            current_pinned_list: self.current_pinned_list.clone(),
+            pinning_limit: self.pinning_limit.clone(),
+            segment_size: self.segment_size.clone(),
+            pin_on_demand: self.pin_on_demand,
+            sleep_duration: self.sleep_duration.clone(),
+            cache_builder: self.cache_builder.clone(),
             segments: self.segments.clone(),
             page_cache_2mb: self.page_cache_2mb.clone(),
             page_cache_4kb: self.page_cache_4kb.clone(),
@@ -234,78 +448,149 @@ where
     }
 }
 
-impl<Slab> ZeroCopyCache<Slab>
+impl<Slab, CB> ZeroCopyCache<Slab, CB>
 where
     Slab: DatapathSlab + std::fmt::Debug,
+    CB: CacheBuilder<Slab> + std::fmt::Debug + Clone + PartialEq + Eq + Send + Sync,
 {
-    pub fn new() -> Self {
-        ZeroCopyCache {
-            // segment_stats: Arc::new(SegmentStatMap::<(Slab::SlabId, usize)>::default()),
-            segment_stats: Arc::new(Mutex::new(
-                SegmentStatMap::<(Slab::SlabId, usize)>::default(),
-            )),
-            current_pinned_list: HashSet::default(),
+    pub fn new(
+        pinning_limit: usize,
+        segment_size: usize,
+        pin_on_demand: bool,
+        sleep_duration: std::time::Duration,
+    ) -> Result<Self> {
+        ensure!(
+            segment_size <= pinning_limit,
+            "Segment size cannot be larger than pinning limit."
+        );
+        ensure!(
+            segment_size == 0 && pinning_limit == 0 || pinning_limit % segment_size == 0,
+            "Pinning limit must be a multiple of segment size"
+        );
+        Ok(ZeroCopyCache {
+            pinning_limit,
+            segment_size,
+            pin_on_demand,
+            sleep_duration,
+            cache_builder: Arc::new(Mutex::new(CacheBuilder::new(pinning_limit / segment_size))),
             segments: HashMap::default(),
             page_cache_2mb: HashMap::default(),
             page_cache_4kb: HashMap::default(),
             page_cache_1gb: HashMap::default(),
+        })
+    }
+
+    /// Returns current data pinned. Assumes all segments are the same sixe.
+    pub fn current_bytes_pinned(&self) -> usize {
+        self.cache_builder
+            .lock()
+            .expect("Could not lock cache builder")
+            .current_bytes_pinned(self.segment_size)
+    }
+
+    fn pin_segment(
+        &mut self,
+        id: &(Slab::SlabId, usize),
+        priv_info: &Slab::PrivateInfo,
+    ) -> Result<Slab::IOInfo> {
+        let segment = self.segments.get(id);
+        match segment {
+            Some(extracted_segment) => {
+                let mut locked_segment = extracted_segment.lock().unwrap();
+                locked_segment.0.register(priv_info);
+                tracing::debug!("Pinning segment: {:?}", locked_segment);
+                return Ok(locked_segment.0.get_io_info());
+            }
+            None => {
+                bail!("Trying to pin segment ID: {:?} Not found", id);
+            }
         }
     }
 
-    pub fn pin_and_unpin_thread(&mut self, priv_info: Slab::PrivateInfo) {
+    fn unpin_segment(&mut self, id: &(Slab::SlabId, usize)) -> Result<()> {
+        let segment = self.segments.get(id);
+        match segment {
+            Some(extracted_segment) => loop {
+                let mut locked_segment = extracted_segment.lock().unwrap();
+                locked_segment.2 = true;
+                if locked_segment.1 == 0 {
+                    tracing::debug!("Unpinning segment: {:?}", locked_segment);
+                    locked_segment.0.unregister();
+                    locked_segment.2 = false;
+                    break;
+                }
+            },
+            None => {
+                tracing::error!("Segment ID: {:?} Not found", id);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn update_pinned_list(&mut self, priv_info: &Slab::PrivateInfo) -> Result<()> {
+        let new_pinned_list = self
+            .cache_builder
+            .lock()
+            .expect("Could not lock cache builder")
+            .return_top_segments_to_pin();
+
+        let current_pinned_list = self
+            .cache_builder
+            .lock()
+            .expect("Could not lock cache builder")
+            .current_pinned_segments()
+            .clone();
+
+        for item in current_pinned_list.difference(&new_pinned_list) {
+            self.unpin_segment(item)?;
+        }
+
+        for item in new_pinned_list.difference(&current_pinned_list) {
+            let _ = self.pin_segment(item, priv_info)?;
+        }
+
+        self.cache_builder
+            .lock()
+            .expect("Could not lock cache builder")
+            .set_current_pinned_list(new_pinned_list);
+        Ok(())
+    }
+
+    pub fn pin_and_unpin_thread(&mut self, priv_info: Slab::PrivateInfo) -> Result<()> {
+        if self.pin_on_demand {
+            bail!("Initialized pin and unpin thread even though pin on demand configured");
+        }
         loop {
-            let new_pinned_list = self.return_all_segments_sized();
-            tracing::debug!("The current hotset is: {:?}", new_pinned_list);
-            // tracing::debug!("The segment stats is: {:?}", self.segment_stats);
-            for item in self.current_pinned_list.difference(&new_pinned_list) {
-                // UNPINNING THE ITEMS
-                let segment = self.segments.get(item);
-                match segment {
-                    Some(extracted_segment) => loop {
-                        let mut locked_segment = extracted_segment.lock().unwrap();
-                        locked_segment.2 = true;
-                        if locked_segment.1 == 0 {
-                            tracing::debug!("Unpinning segment: {:?}", locked_segment);
-                            locked_segment.0.unregister();
-                            locked_segment.2 = false;
-                            break;
-                        }
-                    },
-                    None => {
-                        tracing::error!("Segment ID: {:?} Not found", item.0);
-                    }
-                }
-            }
-
-            for item in new_pinned_list.difference(&self.current_pinned_list) {
-                let segment = self.segments.get(item);
-                match segment {
-                    Some(extracted_segment) => {
-                        let mut locked_segment = extracted_segment.lock().unwrap();
-                        locked_segment.0.register(&priv_info);
-                        tracing::debug!("Pinning segment: {:?}", locked_segment);
-                    }
-                    None => {
-                        tracing::error!("Segment ID: {:?} Not found", item.0);
-                    }
-                }
-            }
-
-            self.current_pinned_list = new_pinned_list;
-            sleep(Duration::new(1, 0));
+            self.update_pinned_list(&priv_info)?;
+            sleep(self.sleep_duration);
         }
     }
 
     pub fn initialize_slab(
         &mut self,
         slab: &Slab,
-        num_registrations: usize,
         register_at_start: bool,
         priv_info: Slab::PrivateInfo,
-    ) {
+    ) -> Result<()> {
+        let mempool_size = slab.get_total_num_pages() * slab.get_page_size_as_num();
+        ensure!(
+            mempool_size >= self.segment_size && mempool_size % self.segment_size == 0,
+            format!(
+                "Reg size not larger and multiple of segment size: {}",
+                self.segment_size
+            )
+        );
+        // mempool size is in bytes, segment size is in terms of half of 2MB pages
+        let num_registrations = mempool_size / self.segment_size;
         tracing::debug!("Initializing slab with {} registrations", num_registrations);
         let pages_per_registration = slab.get_total_num_pages() / num_registrations;
         let reg_size = pages_per_registration * slab.get_page_size_as_num();
+        let mut cur_pinned_list = self
+            .cache_builder
+            .lock()
+            .expect("Could not lock cache builder")
+            .current_pinned_segments()
+            .clone();
         let segs: Vec<Arc<Mutex<(DatapathSegment<Slab>, usize, bool)>>> = (0..num_registrations)
             .map(|reg| {
                 let start_address = slab.get_start_address() as usize + reg_size * reg;
@@ -332,7 +617,10 @@ where
                     }
                     // if register at start, register slab
                     if register_at_start {
-                        s.0.register(&priv_info);
+                        if self.current_bytes_pinned() < self.pinning_limit {
+                            s.0.register(&priv_info);
+                            cur_pinned_list.insert((slab.get_slab_id(), reg));
+                        }
                     }
                 }
 
@@ -343,6 +631,11 @@ where
         for (i, seg) in segs.into_iter().enumerate() {
             self.segments.insert((slab.get_slab_id(), i), seg);
         }
+        self.cache_builder
+            .lock()
+            .expect("Could not lock cache builder")
+            .set_current_pinned_list(cur_pinned_list);
+        Ok(())
     }
 
     /// Get segment ID for raw address.
@@ -385,17 +678,46 @@ where
         }
     }
 
+    fn record_and_pin_on_demand(
+        &mut self,
+        segment_id: (Slab::SlabId, usize),
+        priv_info: Slab::PrivateInfo,
+    ) -> Result<Option<(Slab::SlabId, Slab::IOInfo)>> {
+        let seg_id_option = {
+            let mut cache_builder = self
+                .cache_builder
+                .lock()
+                .expect("Could not lock cache builder");
+            cache_builder.update_access(segment_id);
+            cache_builder.insert_and_evict(segment_id)
+        };
+        if let Some(seg_id) = seg_id_option {
+            self.unpin_segment(&seg_id)?;
+        };
+
+        // pin new segment
+        let io_info = self.pin_segment(&segment_id, &priv_info)?;
+        return Ok(Some((segment_id.0, io_info)));
+    }
+
     pub fn record_access_and_get_io_info_if_pinned(
         &mut self,
         buf: &[u8],
-    ) -> Option<(Slab::SlabId, Slab::IOInfo)> {
+        priv_info: Slab::PrivateInfo,
+    ) -> Result<Option<(Slab::SlabId, Slab::IOInfo)>> {
         match self.get_segment_id(buf) {
             Some(segment_id) => {
                 tracing::debug!("IO was in segment: {:?}", segment_id);
+                if self.pin_on_demand {
+                    return self.record_and_pin_on_demand(segment_id, priv_info);
+                }
                 // update access to segment
-                self.update_stats(segment_id);
+                self.cache_builder
+                    .lock()
+                    .expect("Failed to lock cache builder")
+                    .update_access(segment_id);
 
-                // try to get lock around segment and count to update
+                // not running ondemandlru, try to get pinning info or return None
                 match self.segments.get(&segment_id) {
                     Some(segment_arc) => {
                         let mut lock = segment_arc.try_lock();
@@ -406,80 +728,29 @@ where
                                 mutex.1 += 1;
                                 // Checking for pinned segment
                                 if mutex.2 {
-                                    return None;
+                                    return Ok(None);
                                 }
                                 // return segment id and io info to caller
                                 let slab_id = segment_id.0;
-                                return Some((slab_id, mutex.0.get_io_info()));
+                                return Ok(Some((slab_id, mutex.0.get_io_info())));
                             } else {
-                                return None;
+                                // not pinned
+                                return Ok(None);
                             }
                         } else {
                             // someone else has lock
-                            return None;
+                            return Ok(None);
                         }
                     }
-
                     None => {
-                        return None;
+                        // memory not managed by us
+                        return Ok(None);
                     }
                 }
             }
             None => {
-                return None;
+                return Ok(None);
             }
         };
-    }
-
-    pub fn update_stats(&mut self, segment_id: (Slab::SlabId, usize)) {
-        // println!("Inside update stats");
-        let mut unlocked_segment_stats = self.segment_stats.lock().unwrap();
-        if unlocked_segment_stats.contains_key(&segment_id) {
-            unlocked_segment_stats
-                .get_mut(&segment_id)
-                .unwrap()
-                .update_stats();
-        } else {
-            unlocked_segment_stats.insert(segment_id, Stats::new());
-        }
-    }
-
-    pub fn get_segment_access_count(&self, segment_id: (Slab::SlabId, usize)) -> Option<i64> {
-        let cloned_segment = self.segment_stats.lock().unwrap();
-        match cloned_segment.get(&segment_id) {
-            Some(s) => Some(s.get_access_count()),
-            None => None,
-        }
-    }
-
-    /// Currently ineffecient strategy of sorting through the vector and getting the top segments.
-    /// Need better strategies to performance these actions.
-    pub fn calculate_hotset_v0(&mut self) -> HashSet<(Slab::SlabId, usize)> {
-        let mut sorting_vec: Vec<((Slab::SlabId, usize), i64)> = Vec::new();
-        let mut pinned_list = HashSet::new();
-        let cloned_segment_list = self.segment_stats.lock().unwrap();
-        let curr_val = cloned_segment_list.clone();
-        std::mem::drop(cloned_segment_list);
-        for (k, v) in curr_val.clone().into_iter() {
-            sorting_vec.push((k, v.access_count));
-        }
-        sorting_vec.sort_by(|a, b| a.1.cmp(&b.1));
-        for (seg_id, _) in sorting_vec {
-            pinned_list.insert(seg_id);
-        }
-
-        pinned_list
-    }
-
-    pub fn return_all_segments_sized(&mut self) -> HashSet<(Slab::SlabId, usize)> {
-        tracing::debug!("Going into the return all segments");
-        let mut pinned_list = HashSet::new();
-        let cloned_segment_list = self.segment_stats.lock().unwrap();
-        let current_values = cloned_segment_list.clone();
-        std::mem::drop(cloned_segment_list);
-        for (seg_id, _) in current_values {
-            pinned_list.insert(seg_id);
-        }
-        pinned_list
     }
 }
