@@ -10,6 +10,29 @@ use std::{
 
 pub const DEFAULT_CACHE_SIZE: usize = 10_000;
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum CacheType {
+    OnDemandLru,
+    TimestampLru,
+    LinkedListLru,
+    Mfu,
+    NoAlg,
+}
+
+impl std::str::FromStr for CacheType {
+    type Err = color_eyre::eyre::Error;
+    fn from_str(s: &str) -> Result<CacheType> {
+        Ok(match s {
+            "ondemandlru" | "OnDemandLru" | "ONDEMANDLRU" => CacheType::OnDemandLru,
+            "timestamplru" | "TimestampLru" | "TIMESTAMPLRU" => CacheType::TimestampLru,
+            "linkedlistlru" | "LinkedListLru" | "LINKEDLISTLRU" => CacheType::LinkedListLru,
+            "mfu" | "Mfu" | "MFU" => CacheType::Mfu,
+            "noalg" | "NoAlg" | "NOALG" => CacheType::NoAlg,
+            x => bail!("{} cache type unknown", x),
+        })
+    }
+}
+
 pub trait CacheBuilder<Slab>
 where
     Slab: DatapathSlab,
@@ -33,6 +56,53 @@ where
         self.current_pinned_segments().len() * segment_size
     }
     fn set_current_pinned_list(&mut self, list: HashSet<(Slab::SlabId, usize)>);
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct NoAlgCache<Slab>
+where
+    Slab: DatapathSlab,
+{
+    limit: usize,
+    current_pinned_list: HashSet<(Slab::SlabId, usize)>,
+}
+
+unsafe impl<Slab> Send for NoAlgCache<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
+unsafe impl<Slab> Sync for NoAlgCache<Slab> where Slab: DatapathSlab + std::fmt::Debug {}
+
+impl<Slab> CacheBuilder<Slab> for NoAlgCache<Slab>
+where
+    Slab: DatapathSlab,
+{
+    fn new(limit: usize) -> Self
+    where
+        Self: Sized,
+    {
+        NoAlgCache {
+            limit,
+            current_pinned_list: HashSet::default(),
+        }
+    }
+
+    fn return_top_segments_to_pin(&self) -> HashSet<(Slab::SlabId, usize)> {
+        return self.current_pinned_list.clone();
+    }
+
+    fn insert_and_evict(&mut self, _id: (Slab::SlabId, usize)) -> Option<(Slab::SlabId, usize)> {
+        unreachable!();
+    }
+
+    fn update_access(&mut self, _id: (Slab::SlabId, usize)) {}
+
+    fn reset(&mut self) {}
+
+    fn current_pinned_segments(&self) -> &HashSet<(Slab::SlabId, usize)> {
+        &self.current_pinned_list
+    }
+
+    fn set_current_pinned_list(&mut self, list: HashSet<(Slab::SlabId, usize)>) {
+        self.current_pinned_list = list;
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -251,7 +321,7 @@ pub trait DatapathSlab {
     type SlabId: Hash + PartialEq + Eq + Clone + Copy + std::fmt::Debug;
     type IOInfo: PartialEq + Eq + Clone + Copy;
     type PinningState: std::fmt::Debug + Send + Sync;
-    type PrivateInfo;
+    type PrivateInfo: Clone + Send + Sync;
 
     fn default_pinning_state(&self) -> Self::PinningState;
 
@@ -425,7 +495,8 @@ where
     page_cache_4kb: HashMap<usize, (Slab::SlabId, usize)>,
     /// Cache page addresses to segment ID for size 1gb.
     page_cache_1gb: HashMap<usize, (Slab::SlabId, usize)>,
-    // pub cache_builder: C
+    /// Private (datapath-specific) info necessary for pinning/unpinning.
+    priv_info: Slab::PrivateInfo,
 }
 
 impl<Slab, CB> Clone for ZeroCopyCache<Slab, CB>
@@ -444,6 +515,7 @@ where
             page_cache_2mb: self.page_cache_2mb.clone(),
             page_cache_4kb: self.page_cache_4kb.clone(),
             page_cache_1gb: self.page_cache_1gb.clone(),
+            priv_info: self.priv_info.clone(),
         }
     }
 }
@@ -458,6 +530,7 @@ where
         segment_size: usize,
         pin_on_demand: bool,
         sleep_duration: std::time::Duration,
+        priv_info: Slab::PrivateInfo,
     ) -> Result<Self> {
         ensure!(
             segment_size <= pinning_limit,
@@ -477,7 +550,12 @@ where
             page_cache_2mb: HashMap::default(),
             page_cache_4kb: HashMap::default(),
             page_cache_1gb: HashMap::default(),
+            priv_info,
         })
+    }
+
+    pub fn pin_on_demand(&self) -> bool {
+        self.pin_on_demand
     }
 
     /// Returns current data pinned. Assumes all segments are the same sixe.
