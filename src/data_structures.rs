@@ -289,10 +289,22 @@ where
     }
 
     fn return_top_segments_to_pin(&self) -> HashSet<(Slab::SlabId, usize)> {
-        unimplemented!();
+        // TODO: is there a more efficient way to do this?
+        let mut counts: Vec<((Slab::SlabId, usize), usize)> =
+            self.access_counts.clone().into_iter().collect();
+        counts.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        return HashSet::from_iter(
+            counts
+                .iter()
+                .enumerate()
+                .take_while(|(i, _val)| *i < self.limit)
+                .map(|(_i, val)| val.0.clone())
+                .collect::<Vec<(Slab::SlabId, usize)>>(),
+        );
     }
 
     fn insert_and_evict(&mut self, _id: (Slab::SlabId, usize)) -> Option<(Slab::SlabId, usize)> {
+        // should not be calling insert and evict for this method.
         unimplemented!();
     }
 
@@ -302,7 +314,9 @@ where
     }
 
     fn reset(&mut self) {
-        unimplemented!();
+        for (_k, val) in self.access_counts.iter_mut() {
+            *val = 0;
+        }
     }
 
     fn current_pinned_segments(&self) -> &HashSet<(Slab::SlabId, usize)> {
