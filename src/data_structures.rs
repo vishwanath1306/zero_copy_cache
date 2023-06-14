@@ -494,10 +494,14 @@ where
     pinning_limit: usize,
     /// Size of each segment that should be maintained by ZCC in bytes.
     segment_size: usize,
+    /// Whether no algorithm (=vanilla cornflakes) version
+    no_algorithm: bool,
     /// Whether to pin on demand,
     pin_on_demand: bool,
     /// Time to sleep between pins in pin-unpin thread.
     sleep_duration: std::time::Duration,
+    /// Unlocked (initial segment) mappings, for no algorithm case
+    initial_pinning_mappings: HashMap<(Slab::SlabId, usize), Option<Slab::IOInfo>>,
     /// Actual segments themselves to be pinned or unpinned, along with associated metadata.
     segments: HashMap<(Slab::SlabId, usize), Arc<Mutex<(DatapathSegment<Slab>, usize, bool)>>>,
     /// Cache module that maintains statistics on segments themselves. TODO: work on more fine
@@ -522,9 +526,11 @@ where
         ZeroCopyCache {
             pinning_limit: self.pinning_limit.clone(),
             segment_size: self.segment_size.clone(),
+            no_algorithm: self.no_algorithm,
             pin_on_demand: self.pin_on_demand,
             sleep_duration: self.sleep_duration.clone(),
             cache_builder: self.cache_builder.clone(),
+            initial_pinning_mappings: self.initial_pinning_mappings.clone(),
             segments: self.segments.clone(),
             page_cache_2mb: self.page_cache_2mb.clone(),
             page_cache_4kb: self.page_cache_4kb.clone(),
@@ -539,10 +545,15 @@ where
     Slab: DatapathSlab + std::fmt::Debug,
     CB: CacheBuilder<Slab> + std::fmt::Debug + Clone + PartialEq + Eq + Send + Sync,
 {
+    pub fn no_alg(&self) -> bool {
+        self.no_algorithm
+    }
+
     pub fn new(
         pinning_limit: usize,
         segment_size: usize,
         pin_on_demand: bool,
+        no_algorithm: bool,
         sleep_duration: std::time::Duration,
         priv_info: Slab::PrivateInfo,
     ) -> Result<Self> {
@@ -558,8 +569,10 @@ where
             pinning_limit,
             segment_size,
             pin_on_demand,
+            no_algorithm,
             sleep_duration,
             cache_builder: Arc::new(Mutex::new(CacheBuilder::new(pinning_limit / segment_size))),
+            initial_pinning_mappings: HashMap::default(),
             segments: HashMap::default(),
             page_cache_2mb: HashMap::default(),
             page_cache_4kb: HashMap::default(),
@@ -708,9 +721,12 @@ where
                         self.page_cache_1gb.insert(page, (slab.get_slab_id(), reg));
                     }
                     // if register at start, register slab
+                    // for no alg case register at start should be true and pinning limit should be
+                    // high
                     if register_at_start {
                         if self.current_bytes_pinned() < self.pinning_limit {
                             s.0.register(&priv_info);
+                            s.2 = true;
                             cur_pinned_list.insert((slab.get_slab_id(), reg));
                         }
                     }
@@ -720,6 +736,16 @@ where
             })
             .collect();
 
+        // fill in initial pinning mappings
+        for (i, seg) in segs.iter().enumerate() {
+            let unlocked_seg = seg.lock().expect("Could not lock segment");
+            let val = match unlocked_seg.2 {
+                true => Some(unlocked_seg.0.get_io_info()),
+                false => None,
+            };
+            self.initial_pinning_mappings
+                .insert((slab.get_slab_id(), i), val);
+        }
         for (i, seg) in segs.into_iter().enumerate() {
             self.segments.insert((slab.get_slab_id(), i), seg);
         }
@@ -792,11 +818,37 @@ where
         return Ok(Some((segment_id.0, io_info)));
     }
 
+    pub fn get_io_info_no_alg(&self, buf: &[u8]) -> Result<Option<(Slab::SlabId, Slab::IOInfo)>> {
+        // looks at initial mappings, because, presumably, mappings have not changed
+        match self.get_segment_id(buf) {
+            Some(segment_id) => match self.initial_pinning_mappings.get(&segment_id) {
+                Some(io_info_option) => match io_info_option {
+                    Some(io_info) => {
+                        return Ok(Some((segment_id.0, io_info.clone())));
+                    }
+                    None => {
+                        return Ok(None);
+                    }
+                },
+                None => {
+                    tracing::warn!("Segment id mapped but not in initial pinning mappings");
+                    return Ok(None);
+                }
+            },
+            None => {
+                return Ok(None);
+            }
+        }
+    }
+
     pub fn record_access_and_get_io_info_if_pinned(
         &mut self,
         buf: &[u8],
         priv_info: Slab::PrivateInfo,
     ) -> Result<Option<(Slab::SlabId, Slab::IOInfo)>> {
+        if self.no_alg() {
+            return self.get_io_info_no_alg(buf);
+        }
         match self.get_segment_id(buf) {
             Some(segment_id) => {
                 tracing::debug!("IO was in segment: {:?}", segment_id);
