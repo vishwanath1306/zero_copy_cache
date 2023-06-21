@@ -89,7 +89,7 @@ where
     }
 
     fn insert_and_evict(&mut self, _id: (Slab::SlabId, usize)) -> Option<(Slab::SlabId, usize)> {
-        unreachable!();
+        unimplemented!();
     }
 
     fn update_access(&mut self, _id: (Slab::SlabId, usize)) {}
@@ -126,6 +126,7 @@ where
     where
         Self: Sized,
     {
+        tracing::info!("Initializing on-demand lru cache");
         OnDemandLruCache {
             limit,
             timestamps: HashMap::default(),
@@ -137,8 +138,33 @@ where
         unimplemented!();
     }
 
-    fn insert_and_evict(&mut self, _id: (Slab::SlabId, usize)) -> Option<(Slab::SlabId, usize)> {
-        unimplemented!();
+    fn insert_and_evict(&mut self, id: (Slab::SlabId, usize)) -> Option<(Slab::SlabId, usize)> {
+        let cur_access = Instant::now();
+        if self.current_pinned_list.len() < self.limit {
+            self.timestamps.insert(id, cur_access);
+            self.current_pinned_list.insert(id);
+            return None;
+        } else {
+            let mut last_timestamp = cur_access;
+            let mut ret = None;
+
+            for (seg, access) in self.timestamps.iter() {
+                if *access < last_timestamp {
+                    last_timestamp = *access;
+                    ret = Some((seg.0, seg.1));
+                }
+            }
+
+            if let Some(evicted) = ret {
+                self.current_pinned_list.remove(&evicted);
+                self.timestamps.remove(&evicted);
+                self.current_pinned_list.insert(id);
+                self.timestamps.insert(id, cur_access);
+                return Some(evicted);
+            } else {
+                unreachable!();
+            }
+        }
     }
 
     fn update_access(&mut self, id: (Slab::SlabId, usize)) {
@@ -565,6 +591,13 @@ where
             segment_size == 0 && pinning_limit == 0 || pinning_limit % segment_size == 0,
             "Pinning limit must be a multiple of segment size"
         );
+        tracing::info!(
+            pin_on_demand = pin_on_demand,
+            no_algorithm = no_algorithm,
+            pinning_limit = pinning_limit,
+            segment_size = segment_size,
+            "Initializing zero copy cache"
+        );
         Ok(ZeroCopyCache {
             pinning_limit,
             segment_size,
@@ -598,6 +631,7 @@ where
         id: &(Slab::SlabId, usize),
         priv_info: &Slab::PrivateInfo,
     ) -> Result<Slab::IOInfo> {
+        tracing::info!(id =? id, "Pinning");
         let segment = self.segments.get(id);
         match segment {
             Some(extracted_segment) => {
@@ -613,13 +647,17 @@ where
     }
 
     fn unpin_segment(&mut self, id: &(Slab::SlabId, usize)) -> Result<()> {
+        tracing::info!(id =? id, "Unpinning");
         let segment = self.segments.get(id);
         match segment {
             Some(extracted_segment) => loop {
                 let mut locked_segment = extracted_segment.lock().unwrap();
                 locked_segment.2 = true;
                 if locked_segment.1 == 0 {
-                    tracing::debug!("Unpinning segment: {:?}", locked_segment);
+                    tracing::info!(
+                        "Drained completions and unpinning segment: {:?}",
+                        locked_segment
+                    );
                     locked_segment.0.unregister();
                     locked_segment.2 = false;
                     break;
@@ -639,12 +677,16 @@ where
             .expect("Could not lock cache builder")
             .return_top_segments_to_pin();
 
+        tracing::debug!("Pinning: {:?}", new_pinned_list);
+
         let current_pinned_list = self
             .cache_builder
             .lock()
             .expect("Could not lock cache builder")
             .current_pinned_segments()
             .clone();
+
+        tracing::debug!("Current: {:?}", current_pinned_list);
 
         for item in current_pinned_list.difference(&new_pinned_list) {
             self.unpin_segment(item)?;
@@ -665,6 +707,7 @@ where
         if self.pin_on_demand {
             bail!("Initialized pin and unpin thread even though pin on demand configured");
         }
+        tracing::warn!("Initializing pin and unpin thread");
         loop {
             self.update_pinned_list(&priv_info)?;
             sleep(self.sleep_duration);
@@ -788,6 +831,12 @@ where
         return None;
     }
 
+    pub fn record_io_access(&mut self, seg_id: &(Slab::SlabId, usize)) {
+        if let Some(segment_arc) = self.segments.get(seg_id) {
+            segment_arc.lock().unwrap().1 += 1;
+        }
+    }
+
     pub fn record_io_completion(&mut self, addr: &[u8]) {
         if let Some(segment_id) = self.get_segment_id(addr) {
             if let Some(segment_arc) = self.segments.get(&segment_id) {
@@ -815,6 +864,8 @@ where
 
         // pin new segment
         let io_info = self.pin_segment(&segment_id, &priv_info)?;
+        // record access to the segment
+        self.record_io_access(&segment_id);
         return Ok(Some((segment_id.0, io_info)));
     }
 
@@ -868,6 +919,7 @@ where
                         // if we can lock
                         if let Ok(ref mut mutex) = lock {
                             if mutex.0.is_pinned() {
+                                tracing::debug!("Segment {:?} pinned", segment_id);
                                 // increment IO count
                                 mutex.1 += 1;
                                 // Checking for pinned segment
@@ -878,16 +930,19 @@ where
                                 let slab_id = segment_id.0;
                                 return Ok(Some((slab_id, mutex.0.get_io_info())));
                             } else {
+                                tracing::debug!("Segment {:?} not pinned", segment_id);
                                 // not pinned
                                 return Ok(None);
                             }
                         } else {
+                            tracing::warn!("Not able to get lock for segment {:?}", segment_id);
                             // someone else has lock
                             return Ok(None);
                         }
                     }
                     None => {
                         // memory not managed by us
+                        tracing::info!("Memory not managed by us");
                         return Ok(None);
                     }
                 }
