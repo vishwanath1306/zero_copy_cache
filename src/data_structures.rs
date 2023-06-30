@@ -376,7 +376,10 @@ pub trait DatapathSlab {
         len: usize,
     );
 
-    fn unpin_segment(pinning_state: &mut Self::PinningState);
+    fn unpin_segment(
+        pinning_state: &mut Self::PinningState,
+        start_address: *mut ::std::os::raw::c_void,
+        len: usize);
 
     fn get_io_info(pinning_state: &Self::PinningState) -> Self::IOInfo;
 
@@ -453,7 +456,11 @@ where
     }
 
     pub fn unregister(&mut self) {
-        Slab::unpin_segment(&mut self.pinning_state);
+        let reglen = self.num_pages * self.get_page_size_as_num();
+        Slab::unpin_segment(
+            &mut self.pinning_state,
+            self.start_address,
+            reglen);
     }
 
     pub fn is_pinned(&self) -> bool {
@@ -646,7 +653,10 @@ where
         }
     }
 
-    fn unpin_segment(&mut self, id: &(Slab::SlabId, usize)) -> Result<()> {
+    fn unpin_segment(
+        &mut self, 
+        id: &(Slab::SlabId, usize),
+    ) -> Result<()> {
         tracing::info!(id =? id, "Unpinning");
         let segment = self.segments.get(id);
         match segment {
