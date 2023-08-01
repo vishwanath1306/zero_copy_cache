@@ -379,7 +379,8 @@ pub trait DatapathSlab {
     fn unpin_segment(
         pinning_state: &mut Self::PinningState,
         start_address: *mut ::std::os::raw::c_void,
-        len: usize);
+        len: usize,
+    );
 
     fn get_io_info(pinning_state: &Self::PinningState) -> Self::IOInfo;
 
@@ -457,10 +458,7 @@ where
 
     pub fn unregister(&mut self) {
         let reglen = self.num_pages * self.get_page_size_as_num();
-        Slab::unpin_segment(
-            &mut self.pinning_state,
-            self.start_address,
-            reglen);
+        Slab::unpin_segment(&mut self.pinning_state, self.start_address, reglen);
     }
 
     pub fn is_pinned(&self) -> bool {
@@ -548,6 +546,8 @@ where
     page_cache_1gb: HashMap<usize, (Slab::SlabId, usize)>,
     /// Private (datapath-specific) info necessary for pinning/unpinning.
     priv_info: Slab::PrivateInfo,
+    /// Whether to record pinning map and where to record to.
+    record_pinning_map: Option<String>,
 }
 
 impl<Slab, CB> Clone for ZeroCopyCache<Slab, CB>
@@ -569,6 +569,7 @@ where
             page_cache_4kb: self.page_cache_4kb.clone(),
             page_cache_1gb: self.page_cache_1gb.clone(),
             priv_info: self.priv_info.clone(),
+            record_pinning_map: self.record_pinning_map.clone(),
         }
     }
 }
@@ -589,6 +590,7 @@ where
         no_algorithm: bool,
         sleep_duration: std::time::Duration,
         priv_info: Slab::PrivateInfo,
+        record_pinning_map: Option<String>,
     ) -> Result<Self> {
         ensure!(
             segment_size <= pinning_limit,
@@ -618,6 +620,7 @@ where
             page_cache_4kb: HashMap::default(),
             page_cache_1gb: HashMap::default(),
             priv_info,
+            record_pinning_map,
         })
     }
 
@@ -653,10 +656,7 @@ where
         }
     }
 
-    fn unpin_segment(
-        &mut self, 
-        id: &(Slab::SlabId, usize),
-    ) -> Result<()> {
+    fn unpin_segment(&mut self, id: &(Slab::SlabId, usize)) -> Result<()> {
         tracing::info!(id =? id, "Unpinning");
         let segment = self.segments.get(id);
         match segment {
@@ -680,7 +680,12 @@ where
         Ok(())
     }
 
-    pub fn update_pinned_list(&mut self, priv_info: &Slab::PrivateInfo) -> Result<()> {
+    pub fn update_pinned_list(
+        &mut self,
+        priv_info: &Slab::PrivateInfo,
+        time: std::time::Duration,
+        fd: &mut Option<csv::Writer<std::fs::File>>,
+    ) -> Result<()> {
         let new_pinned_list = self
             .cache_builder
             .lock()
@@ -696,14 +701,35 @@ where
             .current_pinned_segments()
             .clone();
 
-        tracing::debug!("Current: {:?}", current_pinned_list);
-
+        tracing::info!(
+            "Current: {:?}; new: {:?}",
+            current_pinned_list,
+            new_pinned_list
+        );
         for item in current_pinned_list.difference(&new_pinned_list) {
             self.unpin_segment(item)?;
+            if let Some(ref mut csv_writer) = fd {
+                csv_writer.write_record(&[
+                    format!("{:?}", item.0).as_str(),
+                    format!("{:?}", item.1).as_str(),
+                    "false",
+                    format!("{:?}", time.as_secs_f64()).as_str(),
+                ])?;
+                csv_writer.flush()?;
+            }
         }
 
         for item in new_pinned_list.difference(&current_pinned_list) {
             let _ = self.pin_segment(item, priv_info)?;
+            if let Some(ref mut csv_writer) = fd {
+                csv_writer.write_record(&[
+                    format!("{:?}", item.0).as_str(),
+                    format!("{:?}", item.1).as_str(),
+                    "true",
+                    format!("{:?}", time.as_secs_f64()).as_str(),
+                ])?;
+                csv_writer.flush()?;
+            }
         }
 
         self.cache_builder
@@ -718,8 +744,16 @@ where
             bail!("Initialized pin and unpin thread even though pin on demand configured");
         }
         tracing::warn!("Initializing pin and unpin thread");
+        let mut writer: Option<csv::Writer<std::fs::File>> = None;
+        if let Some(f) = self.record_pinning_map.clone() {
+            let mut w = csv::Writer::from_path(f)?;
+            w.write_record(&["region_id", "seg_id", "pin", "time"])?;
+            w.flush()?;
+            writer = Some(w);
+        }
+        let start = std::time::Instant::now();
         loop {
-            self.update_pinned_list(&priv_info)?;
+            self.update_pinned_list(&priv_info, start.elapsed(), &mut writer)?;
             sleep(self.sleep_duration);
         }
     }
