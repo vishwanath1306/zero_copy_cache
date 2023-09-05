@@ -701,7 +701,7 @@ where
             .current_pinned_segments()
             .clone();
 
-        tracing::info!(
+        tracing::debug!(
             "Current: {:?}; new: {:?}",
             current_pinned_list,
             new_pinned_list
@@ -774,7 +774,11 @@ where
         );
         // mempool size is in bytes, segment size is in terms of half of 2MB pages
         let num_registrations = mempool_size / self.segment_size;
-        tracing::debug!("Initializing slab with {} registrations", num_registrations);
+        tracing::info!(
+            register_at_start,
+            "Initializing slab with {} registrations",
+            num_registrations
+        );
         let pages_per_registration = slab.get_total_num_pages() / num_registrations;
         let reg_size = pages_per_registration * slab.get_page_size_as_num();
         let mut cur_pinned_list = self
@@ -979,7 +983,7 @@ where
                                 return Ok(None);
                             }
                         } else {
-                            tracing::warn!("Not able to get lock for segment {:?}", segment_id);
+                            tracing::debug!("Not able to get lock for segment {:?}", segment_id);
                             // someone else has lock
                             return Ok(None);
                         }
