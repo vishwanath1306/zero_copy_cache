@@ -1,3 +1,6 @@
+extern crate core_affinity;
+
+use core_affinity::CoreId;
 use super::pagesizes;
 use color_eyre::eyre::{bail, ensure, Result};
 use std::{
@@ -7,6 +10,8 @@ use std::{
     thread::sleep,
     time::Instant,
 };
+
+pub const PIN_UNPIN_CORE: usize = 3;
 
 pub const DEFAULT_CACHE_SIZE: usize = 10_000;
 
@@ -744,6 +749,11 @@ where
             bail!("Initialized pin and unpin thread even though pin on demand configured");
         }
         tracing::warn!("Initializing pin and unpin thread");
+        let core = CoreId { id: PIN_UNPIN_CORE };
+        let res = core_affinity::set_for_current(core);
+        if !res {
+            tracing::warn!("Could not set core affinity for pin and unpin thread");
+        }
         let mut writer: Option<csv::Writer<std::fs::File>> = None;
         if let Some(f) = self.record_pinning_map.clone() {
             let mut w = csv::Writer::from_path(f)?;
