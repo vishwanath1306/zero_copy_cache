@@ -601,10 +601,14 @@ where
             segment_size <= pinning_limit,
             "Segment size cannot be larger than pinning limit."
         );
-        ensure!(
-            segment_size == 0 && pinning_limit == 0 || pinning_limit % segment_size == 0,
-            "Pinning limit must be a multiple of segment size"
-        );
+        
+        if no_algorithm == false{
+            ensure!(
+                segment_size == 0 && pinning_limit == 0 || pinning_limit % segment_size == 0,
+                "Pinning limit must be a multiple of segment size"
+            );
+        }
+        
         tracing::info!(
             pin_on_demand = pin_on_demand,
             no_algorithm = no_algorithm,
